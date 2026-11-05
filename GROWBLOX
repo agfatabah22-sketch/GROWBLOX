@@ -1,0 +1,2701 @@
+-- BLUE HUB - Block Farm | owned / authorized worlds | paired seed/block selector | manual Start
+
+local makeUI = (function()
+-- Presentation only. The controller owns the fixed farm anchor and native actions.
+return function(options)
+    options = options or {}
+    local Players = game:GetService("Players")
+    local Input = game:GetService("UserInputService")
+    local Workspace = game:GetService("Workspace")
+    local player = assert(Players.LocalPlayer, "Player is still loading.")
+    local parent = player:FindFirstChildOfClass("PlayerGui") or player:WaitForChild("PlayerGui", 20)
+    assert(parent, "Player UI is still loading.")
+    local connections, cameraConnection = {}, nil
+    local destroyed, notified, running, hidden, anchored = false, false, false, false, false
+    local position, dragging
+    local panelWidth, panelHeight = 440, 585
+    local farmMode = "farm"
+    local plantCount, lastStats = 21, {}
+    local pickerOpen, selectedSeedId = false, 17
+    local catalog, bySeed, pickerRows = {}, {}, {}
+    local colors = {
+        panel = Color3.fromRGB(15, 23, 38), card = Color3.fromRGB(24, 35, 54),
+        text = Color3.fromRGB(238, 244, 255), muted = Color3.fromRGB(160, 178, 202),
+        blue = Color3.fromRGB(42, 109, 196), green = Color3.fromRGB(65, 216, 158),
+        red = Color3.fromRGB(158, 59, 75), border = Color3.fromRGB(57, 83, 115),
+    }
+    local function number(value)
+        value = tonumber(value)
+        return value and value == value and value >= 0 and value < math.huge and math.floor(value) or 0
+    end
+    local function create(class, properties, owner)
+        local item = Instance.new(class)
+        for key, value in pairs(properties) do item[key] = value end
+        item.Parent = owner
+        return item
+    end
+    local function corner(owner, radius)
+        create("UICorner", { CornerRadius = UDim.new(0, radius or 8) }, owner)
+    end
+    local function connect(signal, fn)
+        local connection = signal:Connect(fn)
+        connections[#connections + 1] = connection
+        return connection
+    end
+    local function label(owner, value, x, y, width, height, size, color, bold)
+        return create("TextLabel", {
+            BackgroundTransparency = 1, Position = UDim2.fromOffset(x, y),
+            Size = UDim2.fromOffset(width, height), Text = value,
+            Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham,
+            TextSize = size or 12, TextColor3 = color or colors.text,
+            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center,
+            TextWrapped = true,
+        }, owner)
+    end
+    local function button(owner, value, x, y, width, height, background)
+        local item = create("TextButton", {
+            Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(width, height),
+            BackgroundColor3 = background or colors.card, BorderSizePixel = 0,
+            Text = value, Font = Enum.Font.GothamBold, TextSize = 12,
+            TextColor3 = colors.text, AutoButtonColor = true, Active = true,
+        }, owner)
+        corner(item)
+        return item
+    end
+    local gui = create("ScreenGui", {
+        Name = "BlueHubGrowbloxGrassFarm", ResetOnSpawn = false, IgnoreGuiInset = true,
+        DisplayOrder = 9981, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    }, parent)
+    local panel = create("Frame", {
+        Name = "Panel", BackgroundColor3 = colors.panel, BorderSizePixel = 0,
+        Size = UDim2.fromOffset(panelWidth, panelHeight), Active = true,
+    }, gui)
+    corner(panel, 12)
+    create("UIStroke", { Color = colors.border, Thickness = 1 }, panel)
+    local scale = create("UIScale", { Scale = 1 }, panel)
+    local header = create("Frame", {
+        Name = "Header", BackgroundTransparency = 1, Active = true,
+        Size = UDim2.fromOffset(panelWidth, 52),
+    }, panel)
+    label(header, "BLUE HUB · BLOCK FARM", 16, 14, 320, 24, 16, colors.text, true)
+    local minimize = button(header, "−", 368, 14, 26, 28)
+    minimize.Name = "Minimize"
+    local close = button(header, "×", 400, 14, 26, 28)
+    close.Name = "Close"
+    local anchor = label(panel, "Titik belum disimpan · tekan SET TITIK.", 16, 54, 408, 24, 12, colors.muted)
+    anchor.Name = "Anchor"
+    local cropSelector = button(panel, "  Grass ↔ Grass Seed   ▾", 16, 83, 408, 34)
+    cropSelector.Name = "CropSelector"
+    cropSelector.TextXAlignment = Enum.TextXAlignment.Left
+    cropSelector.TextTruncate = Enum.TextTruncate.AtEnd
+    local modeFarm = button(panel, "FARM + TANAM", 16, 128, 200, 26, colors.blue)
+    modeFarm.Name, modeFarm.TextSize = "ModeFarm", 11
+    local modeBreak = button(panel, "BREAK ONLY", 224, 128, 200, 26, colors.card)
+    modeBreak.Name, modeBreak.TextSize = "ModeBreakOnly", 11
+    local countRow = create("Frame", {
+        Name = "PlantCountSettings", BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(16, 162), Size = UDim2.fromOffset(408, 30),
+    }, panel)
+    label(countRow, "TOTAL TANAMAN (1–99)", 0, 0, 174, 30, 10, colors.muted, true)
+    local countInput = create("TextBox", {
+        Name = "PlantCountInput", Position = UDim2.fromOffset(176, 0), Size = UDim2.fromOffset(80, 30),
+        BackgroundColor3 = colors.card, BorderSizePixel = 0, Text = tostring(plantCount), PlaceholderText = "1–99",
+        PlaceholderColor3 = colors.muted, TextColor3 = colors.text, Font = Enum.Font.GothamBold,
+        TextSize = 13, ClearTextOnFocus = false, Active = true, TextEditable = true,
+    }, countRow)
+    corner(countInput)
+    local applyCount = button(countRow, "TERAPKAN", 270, 0, 138, 30, colors.blue)
+    applyCount.Name, applyCount.TextSize = "ApplyPlantCount", 11
+    local diagram = create("Frame", {
+        Name = "FarmDiagram", BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(16, 202), Size = UDim2.fromOffset(408, 78),
+    }, panel)
+    label(diagram, "ATAS", 0, 0, 62, 30, 10, colors.muted, true)
+    local treeCaption = label(diagram, "TANAM", 0, 35, 62, 22, 10, colors.muted, true)
+    local seedVisuals = {}
+    local breakCaption = label(diagram, "Tanpa tanam / panen seed", 72, 35, 312, 38, 11, colors.muted)
+    breakCaption.Visible = false
+    for index = 1, 3 do
+        local x = 136 + (index - 1) * 64
+        local block = create("Frame", {
+            Name = "Block_" .. index, Position = UDim2.fromOffset(x, 0),
+            Size = UDim2.fromOffset(56, 30), BackgroundColor3 = Color3.fromRGB(38, 89, 67), BorderSizePixel = 0,
+        }, diagram)
+        corner(block, 6)
+        local blockLabel = label(block, "BLOCK " .. index, 2, 0, 52, 30, 9, colors.green, true)
+        blockLabel.TextXAlignment = Enum.TextXAlignment.Center
+    end
+    for index = 1, 21 do
+        local x = 72 + (index - 1) * 15
+        local seed = create("Frame", {
+            Name = "Seed_" .. index, Position = UDim2.fromOffset(x, 39),
+            Size = UDim2.fromOffset(11, 18),
+            BackgroundColor3 = index == 11 and colors.blue or Color3.fromRGB(38, 89, 67), BorderSizePixel = 0,
+        }, diagram)
+        corner(seed, 3)
+        seedVisuals[#seedVisuals + 1] = seed
+    end
+    local patternCaption = label(diagram, "", 72, 61, 312, 17, 9, colors.muted, true)
+    patternCaption.Name, patternCaption.TextXAlignment = "PlantLayoutCaption", Enum.TextXAlignment.Center
+    local function renderPlants()
+        local shown = math.min(plantCount, #seedVisuals)
+        local shownLeft = math.floor((shown - 1) / 2)
+        for index, seed in ipairs(seedVisuals) do
+            seed.Visible = farmMode == "farm" and index <= shown
+            seed.Position = UDim2.fromOffset(222 + (index - shownLeft - 1) * 15, 39)
+            seed.BackgroundColor3 = index == shownLeft + 1 and colors.blue or Color3.fromRGB(38, 89, 67)
+        end
+        local left = math.floor((plantCount - 1) / 2)
+        local right = plantCount - left - 1
+        patternCaption.Text = plantCount == 1 and "1 tanaman di titik berdiri"
+            or (left .. " kiri · 1 titik · " .. right .. " kanan" .. (plantCount > shown and " · diagram ringkas" or ""))
+        patternCaption.Visible = farmMode == "farm"
+    end
+    local flowLabel = label(panel, "Tanam tuntas → farm 3 blok hingga semua matang → panen tuntas.", 16, 284, 408, 20, 11, colors.text)
+    local helpLabel = label(panel, "Ambil khusus hasil break block bot.\nDrop pohon dibiarkan; terambil saat karakter lewat.", 16, 305, 408, 28, 10, colors.muted)
+    local progress = label(panel, "Terisi 0/" .. plantCount .. " · Tumbuh: 0 · Matang: 0", 16, 333, 408, 22, 12, colors.muted, true)
+    progress.Name = "PlantProgress"
+    local inventoryLabels, inventoryTitles = {}, {}
+    for index, item in ipairs({ { "seeds", "GRASS SEED" }, { "blocks", "GRASS BLOCK" } }) do
+        local card = create("Frame", {
+            Position = UDim2.fromOffset(16 + (index - 1) * 208, 366),
+            Size = UDim2.fromOffset(200, 49), BackgroundColor3 = colors.card, BorderSizePixel = 0,
+        }, panel)
+        corner(card)
+        inventoryTitles[item[1]] = label(card, item[2], 10, 5, 180, 14, 9, colors.muted, true)
+        inventoryTitles[item[1]].TextWrapped = false
+        inventoryTitles[item[1]].TextTruncate = Enum.TextTruncate.AtEnd
+        inventoryLabels[item[1]] = label(card, "0", 10, 21, 180, 23, 20, colors.green, true)
+        inventoryLabels[item[1]].Name = item[1]
+    end
+    local totals = label(panel, "Tanam: 0  ·  Pasang: 0  ·  Pukul: 0  ·  Panen: 0", 16, 422, 408, 21, 11, colors.muted)
+    totals.Name = "Totals"
+    local statusBox = create("Frame", {
+        Position = UDim2.fromOffset(16, 451), Size = UDim2.fromOffset(408, 60),
+        BackgroundColor3 = colors.card, BorderSizePixel = 0,
+    }, panel)
+    corner(statusBox)
+    local status = label(statusBox, "Siap. Simpan titik berdiri, lalu tekan START.", 10, 7, 388, 46, 12, colors.text)
+    status.Name = "Status"
+    status.TextYAlignment = Enum.TextYAlignment.Top
+    local start = button(panel, "START", 16, 519, 128, 34, colors.card)
+    start.Name = "Start"
+    local stop = button(panel, "STOP", 152, 519, 128, 34, colors.red)
+    stop.Name = "Stop"
+    local capture = button(panel, "SET TITIK", 288, 519, 136, 34)
+    capture.Name = "Capture"
+    label(panel, "F8: stop  ·  Right Shift: hide  ·  Drag judul", 16, 561, 408, 17, 10, colors.muted)
+    local picker = create("Frame", {
+        Name = "CropPicker", BackgroundColor3 = colors.panel, BorderSizePixel = 0,
+        Size = UDim2.fromOffset(panelWidth, panelHeight), Active = true, Visible = false,
+    }, gui)
+    corner(picker, 12)
+    create("UIStroke", { Color = colors.border, Thickness = 1 }, picker)
+    local pickerScale = create("UIScale", { Scale = 1 }, picker)
+    local pickerHeader = create("Frame", {
+        Name = "Header", BackgroundTransparency = 1, Active = true,
+        Size = UDim2.fromOffset(panelWidth, 64),
+    }, picker)
+    label(pickerHeader, "PILIH SEED ↔ BLOCK", 16, 13, 310, 24, 15, colors.text, true)
+    label(pickerHeader, "Cari nama; pasangan block dipilih otomatis.", 16, 39, 408, 20, 11, colors.muted)
+    local pickerBack = button(pickerHeader, "KEMBALI", 344, 13, 80, 28)
+    pickerBack.Name = "Back"
+    local search = create("TextBox", {
+        Name = "Search", Position = UDim2.fromOffset(16, 72), Size = UDim2.fromOffset(408, 34),
+        BackgroundColor3 = colors.card, BorderSizePixel = 0, Text = "", PlaceholderText = "Cari Grass, Dirt, nama seed atau block...",
+        PlaceholderColor3 = colors.muted, TextColor3 = colors.text, Font = Enum.Font.Gotham,
+        TextSize = 13, ClearTextOnFocus = false, TextXAlignment = Enum.TextXAlignment.Left,
+        Active = true,
+    }, picker)
+    corner(search)
+    create("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, search)
+    local matchCount = label(picker, "0 cocok", 16, 112, 408, 20, 11, colors.muted)
+    matchCount.Name = "MatchCount"
+    local results = create("ScrollingFrame", {
+        Name = "Results", Position = UDim2.fromOffset(16, 140), Size = UDim2.fromOffset(408, 375),
+        BackgroundTransparency = 1, BorderSizePixel = 0, CanvasSize = UDim2.fromOffset(0, 0),
+        ScrollBarThickness = 4, ScrollBarImageColor3 = colors.border, Active = true, ClipsDescendants = true,
+    }, picker)
+    -- Pool the result controls once. Inventory refreshes never replace the TextBox
+    -- or rebuild hundreds of buttons while the user is selecting a crop.
+    for index = 1, 40 do
+        local row = button(results, "", 0, (index - 1) * 50, 400, 45)
+        row.Name, row.Visible = "Crop_" .. index, false
+        local name = label(row, "", 10, 4, 378, 20, 12, colors.text, true)
+        name.TextWrapped, name.TextTruncate = false, Enum.TextTruncate.AtEnd
+        local detail = label(row, "", 10, 25, 378, 15, 10, colors.muted)
+        detail.TextWrapped, detail.TextTruncate = false, Enum.TextTruncate.AtEnd
+        pickerRows[index] = { button = row, name = name, detail = detail }
+    end
+    local emptyMessage = label(picker, "Belum ada hasil. Coba nama lain atau REFRESH.", 28, 155, 384, 46, 12, colors.muted)
+    emptyMessage.Name, emptyMessage.Visible = "EmptyResults", false
+    local pickerStatus = label(picker, "Ubah pilihan saat farm berhenti.", 16, 523, 260, 44, 11, colors.muted)
+    pickerStatus.Name = "Status"
+    pickerStatus.TextYAlignment = Enum.TextYAlignment.Top
+    local refreshCrops = button(picker, "REFRESH TAS", 286, 527, 138, 30)
+    refreshCrops.Name = "Refresh"
+    local launcher = button(gui, "BH", 12, 120, 44, 44, colors.blue)
+    launcher.Name, launcher.Visible = "Launcher", false
+    local api = {}
+    local function layout()
+        if destroyed then return end
+        local camera = Workspace.CurrentCamera
+        local viewport = camera and camera.ViewportSize or Vector2.new(800, 600)
+        local factor = math.clamp(math.min((viewport.X - 20) / panelWidth, (viewport.Y - 20) / panelHeight), 0.35, 1)
+        scale.Scale = factor
+        pickerScale.Scale = factor
+        local width, height = panelWidth * factor, panelHeight * factor
+        position = position or Vector2.new(viewport.X - width - 18, math.max(12, (viewport.Y - height) / 2))
+        position = Vector2.new(math.clamp(position.X, 8, math.max(8, viewport.X - width - 8)),
+            math.clamp(position.Y, 8, math.max(8, viewport.Y - height - 8)))
+        -- Use viewport positions directly; this game's reported absolute origin has an inset.
+        panel.Position = UDim2.fromOffset(position.X, position.Y)
+        picker.Position = panel.Position
+        launcher.Position = UDim2.fromOffset(12, math.clamp(math.max(120, position.Y), 8, math.max(8, viewport.Y - 52)))
+    end
+    local function bindCamera()
+        if cameraConnection then cameraConnection:Disconnect() cameraConnection = nil end
+        if Workspace.CurrentCamera then cameraConnection = Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(layout) end
+        layout()
+    end
+    function api.SetVisible(value)
+        if destroyed then return end
+        hidden = value ~= true
+        panel.Visible, picker.Visible, launcher.Visible = not hidden and not pickerOpen, not hidden and pickerOpen, hidden
+        if hidden then search:ReleaseFocus() countInput:ReleaseFocus() end
+        dragging = nil
+        layout()
+    end
+    function api.SetStatus(value)
+        if not destroyed then
+            status.Text = tostring(value or "")
+            pickerStatus.Text = status.Text
+        end
+    end
+    local function setPickerOpen(value)
+        if destroyed then return end
+        pickerOpen = value == true
+        if pickerOpen then countInput:ReleaseFocus() end
+        if not pickerOpen then search:ReleaseFocus() end
+        panel.Visible, picker.Visible = not hidden and not pickerOpen, not hidden and pickerOpen
+        dragging = nil
+        layout()
+    end
+    local function growText(value)
+        local seconds = number(value)
+        if seconds == 0 then return "?" end
+        if seconds >= 3600 then return math.floor(seconds / 3600) .. "j " .. math.floor(seconds % 3600 / 60) .. "m" end
+        if seconds >= 60 then return math.floor(seconds / 60) .. "m " .. seconds % 60 .. "d" end
+        return seconds .. " dtk"
+    end
+    local function renderResults(resetScroll)
+        if destroyed then return end
+        local query = tostring(search.Text or ""):lower():match("^%s*(.-)%s*$")
+        local shown, matched = {}, 0
+        for _, crop in ipairs(catalog) do
+            if query == "" or crop.searchKey:find(query, 1, true) then
+                matched = matched + 1
+                if #shown < 40 then shown[#shown + 1] = crop end
+            end
+        end
+        matchCount.Text = matched .. " cocok · " .. #shown .. " ditampilkan" .. (matched > 40 and " · persempit pencarian" or "")
+        emptyMessage.Visible = matched == 0
+        for index, row in ipairs(pickerRows) do
+            local crop = shown[index]
+            row.crop, row.button.Visible = crop, crop ~= nil
+            if crop then
+                local selected = crop.seedId == selectedSeedId
+                row.button.BackgroundColor3 = selected and Color3.fromRGB(27, 75, 101) or colors.card
+                row.name.Text = (selected and "✓ " or "") .. crop.blockName .. " ↔ " .. crop.seedName
+                row.name.TextColor3 = selected and colors.green or colors.text
+                row.detail.Text = "Seed: " .. crop.seeds .. " · Block: " .. crop.blocks .. " · Tumbuh: " .. growText(crop.grow)
+            end
+        end
+        results.CanvasSize = UDim2.fromOffset(0, #shown * 50)
+        if resetScroll then results.CanvasPosition = Vector2.new(0, 0) end
+    end
+    function api.SetCrop(crop)
+        if destroyed or type(crop) ~= "table" then return end
+        local seedId, blockId = number(crop.seedId), number(crop.blockId)
+        if seedId < 1 or blockId < 1 then return end
+        selectedSeedId = seedId
+        local seedName, blockName = tostring(crop.seedName or ("Seed " .. seedId)), tostring(crop.blockName or ("Block " .. blockId))
+        cropSelector.Text = "  " .. blockName .. " ↔ " .. seedName .. "   ▾"
+        inventoryTitles.seeds.Text, inventoryTitles.blocks.Text = seedName, blockName
+        if crop.seeds ~= nil then inventoryLabels.seeds.Text = tostring(number(crop.seeds)) end
+        if crop.blocks ~= nil then inventoryLabels.blocks.Text = tostring(number(crop.blocks)) end
+        renderResults(false)
+    end
+    function api.SetCrops(crops, currentSeedId)
+        if destroyed then return end
+        catalog, bySeed = {}, {}
+        for _, value in ipairs(type(crops) == "table" and crops or {}) do
+            if type(value) == "table" then
+                local seedId, blockId = number(value.seedId), number(value.blockId)
+                if seedId > 0 and blockId > 0 and not bySeed[seedId] then
+                    local crop = { seedId = seedId, blockId = blockId, seedName = tostring(value.seedName or ("Seed " .. seedId)),
+                        blockName = tostring(value.blockName or ("Block " .. blockId)), seeds = number(value.seeds), blocks = number(value.blocks), grow = number(value.grow) }
+                    crop.searchKey = (crop.seedName .. " " .. crop.blockName .. " " .. seedId .. " " .. blockId):lower()
+                    catalog[#catalog + 1], bySeed[seedId] = crop, crop
+                end
+            end
+        end
+        -- Keep the supplied order: the controller puts owned crops first.
+        local selected = bySeed[number(currentSeedId)] or bySeed[selectedSeedId]
+        if selected then api.SetCrop(selected) else renderResults(false) end
+    end
+    function api.SetRunning(value)
+        if destroyed then return end
+        running = value == true
+        if running and pickerOpen then setPickerOpen(false) end
+        start.Text = running and "RUNNING" or "START"
+        start.BackgroundColor3 = running and Color3.fromRGB(29, 94, 76) or (anchored and colors.blue or colors.card)
+        start.TextColor3 = running and colors.green or (anchored and colors.text or colors.muted)
+        start.AutoButtonColor = not running and anchored
+        capture.AutoButtonColor = not running
+        capture.TextColor3 = running and colors.muted or colors.text
+        cropSelector.AutoButtonColor = not running
+        cropSelector.TextColor3 = running and colors.muted or colors.text
+        modeFarm.AutoButtonColor, modeBreak.AutoButtonColor = not running, not running
+        modeFarm.TextColor3, modeBreak.TextColor3 = running and colors.muted or colors.text, running and colors.muted or colors.text
+        local canEditCount = not running and farmMode == "farm"
+        countInput.TextEditable, countInput.Active = canEditCount, canEditCount
+        countInput.TextColor3 = canEditCount and colors.text or colors.muted
+        applyCount.Active, applyCount.AutoButtonColor = canEditCount, canEditCount
+        applyCount.TextColor3 = canEditCount and colors.text or colors.muted
+        applyCount.BackgroundColor3 = canEditCount and colors.blue or colors.card
+        if not canEditCount and Input:GetFocusedTextBox() == countInput then countInput:ReleaseFocus() end
+    end
+    function api.SetPlantCount(value)
+        if destroyed then return false end
+        local count = tonumber(value)
+        if not count or count ~= count or count < 1 or count > 99 or count % 1 ~= 0 then return false end
+        local changed = count ~= plantCount
+        plantCount = count
+        if changed or Input:GetFocusedTextBox() ~= countInput then countInput.Text = tostring(plantCount) end
+        renderPlants()
+        if farmMode == "farm" then flowLabel.Text = "Tanam " .. plantCount .. " → farm 3 blok hingga matang → panen tuntas." end
+        if api.SetStats then api.SetStats(lastStats) end
+        return true
+    end
+    function api.SetMode(value)
+        if destroyed or (value ~= "farm" and value ~= "break_only") then return end
+        local changed = farmMode ~= value
+        farmMode = value
+        local onlyBreak = farmMode == "break_only"
+        if changed then countInput:ReleaseFocus() countInput.Text = tostring(plantCount) end
+        countRow.Visible = not onlyBreak
+        modeFarm.Text, modeBreak.Text = onlyBreak and "FARM + TANAM" or "✓ FARM + TANAM", onlyBreak and "✓ BREAK ONLY" or "BREAK ONLY"
+        modeFarm.BackgroundColor3, modeBreak.BackgroundColor3 = onlyBreak and colors.card or colors.blue, onlyBreak and colors.blue or colors.card
+        renderPlants()
+        treeCaption.Text, breakCaption.Visible = onlyBreak and "MODE" or "TANAM", onlyBreak
+        flowLabel.Text = onlyBreak and "Pasang 3 blok → pukul 1→2→3 → ambil drop → ulang."
+            or ("Tanam " .. plantCount .. " → farm 3 blok hingga matang → panen tuntas.")
+        helpLabel.Text = onlyBreak and "Tanpa tanam seed; butuh stok block di tas.\nAmbil khusus hasil tiga block yang dipecahkan bot."
+            or "Ambil khusus hasil break block bot.\nDrop pohon dibiarkan; terambil saat karakter lewat."
+        if api.SetStats then api.SetStats(lastStats) end
+        api.SetRunning(running)
+    end
+    function api.SetAnchor(value)
+        if destroyed then return end
+        anchored = type(value) == "table" and type(value.x) == "number" and type(value.y) == "number"
+        anchor.Text = anchored and (tostring(value.world or "AAXYOU") .. " · Titik X " .. tostring(value.x) .. " / Y " .. tostring(value.y))
+            or "Titik belum disimpan · tekan SET TITIK."
+        anchor.TextColor3 = anchored and colors.green or colors.muted
+        api.SetRunning(running)
+    end
+    function api.SetStats(value)
+        if destroyed or type(value) ~= "table" then return end
+        lastStats = value
+        inventoryLabels.seeds.Text = tostring(number(value.seeds))
+        inventoryLabels.blocks.Text = tostring(number(value.blocks))
+        local seedCount = plantCount
+        local growing, mature = number(value.growing), number(value.mature)
+        if farmMode == "break_only" then
+            progress.Text = "BREAK ONLY · Seed tidak ditanam atau dipanen."
+            progress.TextColor3 = colors.muted
+            totals.Text = "Pasang: " .. number(value.placed) .. "  ·  Pukul: " .. number(value.punches) .. "  ·  Diambil: " .. number(value.collected)
+        else
+            progress.Text = "Terisi " .. math.min(seedCount, growing + mature) .. "/" .. seedCount
+                .. " · Tumbuh: " .. growing .. " · Matang: " .. mature
+            progress.TextColor3 = mature > 0 and colors.green or colors.muted
+            totals.Text = "Tanam: " .. number(value.planted) .. "  ·  Pasang: " .. number(value.placed)
+                .. "  ·  Pukul: " .. number(value.punches) .. "  ·  Panen: " .. number(value.harvested)
+        end
+    end
+    local function invoke(name, ...)
+        if destroyed then return end
+        local callback = options[name]
+        if type(callback) == "function" then
+            local ok, result, detail = pcall(callback, ...)
+            if not ok then api.SetStatus("Aksi gagal: " .. tostring(result):sub(1, 130)) return false end
+            return result, detail
+        end
+    end
+    local function notifyClosed()
+        if notified then return end
+        notified = true
+        invoke("onClose")
+    end
+    function api.Destroy()
+        if destroyed then return end
+        destroyed, running, dragging = true, false, nil
+        search:ReleaseFocus()
+        countInput:ReleaseFocus()
+        if cameraConnection then cameraConnection:Disconnect() cameraConnection = nil end
+        for _, connection in ipairs(connections) do connection:Disconnect() end
+        table.clear(connections)
+        gui:Destroy()
+    end
+    connect(start.Activated, function() if not running and anchored then invoke("onStart") end end)
+    connect(stop.Activated, function() invoke("onStop") end)
+    local function selectMode(value)
+        if running then api.SetStatus("Tekan STOP sebelum mengganti mode.") return end
+        if invoke("onSelectMode", value) == true then api.SetMode(value) end
+    end
+    connect(modeFarm.Activated, function() selectMode("farm") end)
+    connect(modeBreak.Activated, function() selectMode("break_only") end)
+    local function applyPlantCount()
+        if destroyed then return end
+        if running then api.SetStatus("Tekan STOP sebelum mengubah total tanaman.") return end
+        if farmMode ~= "farm" then return end
+        local count = tonumber(countInput.Text)
+        if not count or count ~= count or count < 1 or count > 99 or count % 1 ~= 0 then
+            api.SetStatus("Isi total tanaman dengan bilangan bulat 1–99, lalu TERAPKAN.")
+            return
+        end
+        countInput:ReleaseFocus()
+        if invoke("onSetPlantCount", count) == true then api.SetPlantCount(count) end
+    end
+    connect(applyCount.Activated, applyPlantCount)
+    connect(countInput.FocusLost, function(enterPressed) if enterPressed then applyPlantCount() end end)
+    connect(capture.Activated, function() if not running then invoke("onCapture") end end)
+    connect(cropSelector.Activated, function()
+        if running then api.SetStatus("Tekan STOP dahulu sebelum mengganti seed/block.") return end
+        if invoke("onRefreshCrops") == false or destroyed or running then return end
+        pickerStatus.Text = "Pilih pasangan seed/block. Isi tas ditampilkan di tiap baris."
+        setPickerOpen(true)
+        renderResults(false)
+    end)
+    connect(pickerBack.Activated, function() setPickerOpen(false) end)
+    connect(refreshCrops.Activated, function()
+        if running then api.SetStatus("Tekan STOP dahulu sebelum mengganti seed/block.") return end
+        invoke("onRefreshCrops")
+        renderResults(false)
+    end)
+    connect(search:GetPropertyChangedSignal("Text"), function() renderResults(true) end)
+    for _, row in ipairs(pickerRows) do
+        connect(row.button.InputBegan, function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                row.pressed = row.crop and { input = input, seedId = row.crop.seedId } or nil
+            end
+        end)
+        connect(row.button.Activated, function(input)
+            if destroyed then return end
+            if running then api.SetStatus("Tekan STOP dahulu sebelum mengganti seed/block.") return end
+            local pressed = row.pressed
+            local seedId = pressed and (input == nil or input == pressed.input) and pressed.seedId or (row.crop and row.crop.seedId)
+            row.pressed = nil
+            if not seedId then return end
+            if type(options.onSelectCrop) ~= "function" then api.SetStatus("Pilihan crop belum tersedia pada controller ini.") return end
+            if invoke("onSelectCrop", seedId) == true then setPickerOpen(false) end
+        end)
+    end
+    connect(minimize.Activated, function() api.SetVisible(false) end)
+    connect(launcher.Activated, function() api.SetVisible(true) end)
+    connect(close.Activated, function() notifyClosed() api.Destroy() end)
+    connect(gui.Destroying, function() notifyClosed() api.Destroy() end)
+    connect(Input.InputBegan, function(input, processed)
+        if destroyed then return end
+        if input.KeyCode == Enum.KeyCode.F8 then invoke("onStop")
+        elseif not processed and not Input:GetFocusedTextBox() and input.KeyCode == Enum.KeyCode.RightShift then api.SetVisible(hidden) end
+    end)
+    local function beginDrag(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = { input = input, start = Vector2.new(input.Position.X, input.Position.Y), origin = position }
+        end
+    end
+    connect(header.InputBegan, beginDrag)
+    connect(pickerHeader.InputBegan, beginDrag)
+    connect(Input.InputChanged, function(input)
+        if destroyed or not dragging then return end
+        local mouse = dragging.input.UserInputType == Enum.UserInputType.MouseButton1
+        if (mouse and input.UserInputType == Enum.UserInputType.MouseMovement) or input == dragging.input then
+            position = dragging.origin + Vector2.new(input.Position.X, input.Position.Y) - dragging.start
+            layout()
+        end
+    end)
+    connect(Input.InputEnded, function(input)
+        if dragging and (input == dragging.input or input.UserInputType == Enum.UserInputType.MouseButton1) then dragging = nil end
+    end)
+    connect(Workspace:GetPropertyChangedSignal("CurrentCamera"), bindCamera)
+    bindCamera()
+    api.SetCrops({ { seedId = 17, blockId = 16, seedName = "Grass Seed", blockName = "Grass", seeds = 0, blocks = 0, grow = 41 } }, 17)
+    api.SetAnchor(nil)
+    api.SetMode("farm")
+    api.SetRunning(false)
+    return api
+end
+
+end)()
+
+local makeFarmEngine = (function()
+-- Crop row planner. The adapter owns native movement, reach, item and permission checks.
+return function(adapter, options)
+    options = options or {}
+    local world = options.world or "AAXYOU"
+    local farmMode = options.mode == "break_only" and "break_only" or "farm"
+    local state = {
+        mode = farmMode,
+        running = false, closed = false, phase = "stopped", status = "Ready. Stand at the farm position, then START.",
+        planted = 0, placed = 0, punches = 0, harvested = 0, blockIndex = 1, blockCount = 5,
+        seeds = 0, blocks = 0, growing = 0, mature = 0, seedCount = farmMode == "break_only" and 0 or 21, occupied = 0,
+        batchPhase = "planting", allowPickupTravel = false, restocking = false,
+    }
+    local api = { State = state }
+    local revision, stepping, nextAction = 0, false, 0
+    local mode, cursor = "fill", 1
+    local cleanupPending, initialCleanupNeeded, overheadDirty, sweepTouched = false, true, false, false
+    local activeBlockCount, activeSeedCount
+    local activeRowKey, rowDirection, rowCursor, plantingStarted = nil, nil, nil, false
+    local pending, attempts = {}, {}
+    local resumeHint
+    if type(options.resume) == "table" then
+        resumeHint = {}
+        for _,field in ipairs({"version","world","mode","rowKey","seedCount","blockCount","phase",
+            "rowDirection","rowCursor","plantingStarted","blockCursor"}) do
+            resumeHint[field] = options.resume[field]
+        end
+    end
+    local actionInterval, confirmationTimeout, retryLimit = 0.22, 2.5, 3
+    local function finite(value)
+        return type(value) == "number" and value == value and value > -math.huge and value < math.huge
+    end
+    local function blockCount(view) return view.blockCount == nil and 5 or view.blockCount end
+    local function seedCount(view) return view.seedCount == nil and 21 or view.seedCount end
+    local function rowKey(view)
+        if farmMode == "break_only" then
+            local first,last = view.blockSlots[1],view.blockSlots[blockCount(view)]
+            return tostring(view.world)..":blocks:"..blockCount(view)..":"..tostring(first.x)..":"..tostring(first.y)
+                ..":"..tostring(last.x)..":"..tostring(last.y)..":"..tostring(view.seedId)..":"..tostring(view.blockId)
+        end
+        local first,last=view.seedSlots[1],view.seedSlots[seedCount(view)]
+        return tostring(view.world)..":"..seedCount(view)..":"..tostring(first.x)..":"..tostring(first.y)
+            ..":"..tostring(last.x)..":"..tostring(last.y)..":"..tostring(view.seedId)..":"..tostring(view.blockId)
+    end
+    local function release()
+        if type(adapter.Release) == "function" then pcall(adapter.Release) end
+    end
+    local function status(phase, message)
+        state.phase, state.status = phase, message
+    end
+    local function stop(message)
+        state.running = false
+        state.allowPickupTravel = false
+        state.restocking = false
+        revision = revision + 1
+        release()
+        status("stopped", message or "Stopped manually.")
+    end
+    local function read()
+        local ok, view = pcall(adapter.Snapshot)
+        if not ok or type(view) ~= "table" then return nil, "Waiting for farm data." end
+        if view.invalidWorld == true then
+            return nil, tostring(view.message or "World, session, anchor or farm permission changed. Set the farm position again."), true
+        end
+        if view.world ~= nil and view.world ~= "" and view.world ~= world then
+            return nil, "World changed. Farm is restricted to " .. world .. ".", true
+        end
+        if not view.ready or view.world ~= world then return nil, tostring(view.message or "Waiting for the world to load.") end
+        if view.mode ~= nil and view.mode ~= farmMode then return nil, "Farm mode changed. Select the mode again before START.", true end
+        if view.canFarm == false then return nil, tostring(view.message or "This position is not available for farming."), true end
+        if view.atAnchor ~= true and view.canTravel ~= true then return nil, tostring(view.message or "Return to the saved farm position to continue.") end
+        if view.canFarm ~= true or not finite(view.blocks) or view.blocks < 0 or type(view.blockSlots) ~= "table"
+            or farmMode ~= "break_only" and (not finite(view.seeds) or view.seeds < 0 or type(view.seedSlots) ~= "table") then
+            return nil, "Waiting for valid inventory / farm data."
+        end
+        local overheadCount = blockCount(view)
+        if overheadCount ~= 3 and overheadCount ~= 5 then return nil, "Unsupported overhead block count; use three or five.", true end
+        local rowCount = farmMode == "break_only" and 0 or seedCount(view)
+        if farmMode ~= "break_only" then
+        if not finite(rowCount) or rowCount % 1 ~= 0 or rowCount < 1 or rowCount > 99 then
+            return nil, "Plant count must be a whole number from 1 to 99.", true
+        end
+        for i = 1, rowCount do
+            local seed = view.seedSlots[i]
+            if type(seed) ~= "table" then return nil, "Waiting for all " .. rowCount .. " seed slots." end
+            if seed.state == "blocked" then
+                return nil, "Slot " .. i .. " contains another object. Clear the farm area manually, then START.", true
+            end
+            if seed.state ~= "empty" and seed.state ~= "growing" and seed.state ~= "mature" then return nil, "Waiting for valid tree data." end
+        end
+        end
+        for i = 1, overheadCount do
+            local block = view.blockSlots[i]
+            if type(block) ~= "table" then return nil, "Waiting for all overhead block slots." end
+            if block.state == "blocked" then
+                return nil, "Block slot " .. i .. " contains another object. Clear the farm area manually, then START.", true
+            end
+            if block.state ~= "empty" and block.state ~= "grass" then return nil, "Waiting for valid block data." end
+        end
+        return view
+    end
+    local function counts(view)
+        state.blockCount, state.seedCount = blockCount(view), farmMode == "break_only" and 0 or seedCount(view)
+        state.seeds, state.blocks, state.growing, state.mature, state.occupied = finite(view.seeds) and view.seeds or 0, view.blocks, 0, 0, 0
+        state.seedName, state.blockName = view.seedName or "Seed", view.blockName or "Block"
+        if farmMode == "break_only" then return end
+        for i = 1, state.seedCount do
+            if view.seedSlots[i].state == "growing" then state.growing = state.growing + 1 end
+            if view.seedSlots[i].state == "mature" then state.mature = state.mature + 1 end
+        end
+        state.occupied = state.growing + state.mature
+    end
+    local function key(kind, i) return kind .. ":" .. i end
+    local function settle(view, now)
+        for id, action in pairs(pending) do
+            local value = action.kind == "Place" and view.blockSlots[action.index].state or view.seedSlots[action.index].state
+            local confirmed = action.kind == "Plant" and value ~= "empty"
+                or action.kind == "Place" and value == "grass"
+                or action.kind == "Harvest" and value ~= "mature"
+            if confirmed then
+                pending[id], attempts[id] = nil, nil
+                if action.kind == "Plant" then state.planted = state.planted + 1
+                elseif action.kind == "Place" then state.placed = state.placed + 1
+                elseif action.kind == "Harvest" then state.harvested = state.harvested + 1 end
+            elseif now >= action.expires then
+                pending[id] = nil
+                if (attempts[id] or 0) >= retryLimit then
+                    stop(action.kind .. " slot " .. action.index .. " was not confirmed. Check the farm, then START.")
+                    return false
+                end
+            end
+        end
+        return true
+    end
+    local function isPending(kind, i) return pending[key(kind, i)] ~= nil end
+    local function prepare(kind, i, now, before)
+        if type(adapter.Prepare) ~= "function" then return true end
+        local ok, ready, message, fatal = pcall(adapter.Prepare, kind, i, now)
+        if state.closed or not state.running or revision ~= before then return false end
+        if not ok then stop("Farm travel paused: " .. tostring(ready):sub(1, 110)) return false end
+        if fatal == true then stop(tostring(message or "The farm path is unavailable.")) return false end
+        if ready ~= true then
+            status("moving", tostring(message or "Moving to the farm target."))
+            return false
+        end
+        return true
+    end
+    local function cleanup(now, before)
+        if type(adapter.CleanupBlockDrops) == "function" then
+            status("cleanup", "Collecting overhead block drops before the next batch.")
+            local ok, ready, message, fatal = pcall(adapter.CleanupBlockDrops, now)
+            if state.closed or not state.running or revision ~= before then return false end
+            if not ok then stop("Block pickup paused: " .. tostring(ready):sub(1,110)) return false end
+            if fatal == true then stop(tostring(message or "Block pickup permission changed.")) return false end
+            if ready ~= true then
+                cleanupPending = true
+                status("cleanup", tostring(message or "Waiting for overhead block drops to be collected."))
+                return false
+            end
+        end
+        cleanupPending, initialCleanupNeeded, overheadDirty = false, false, false
+        return true
+    end
+    local function finishSweep()
+        mode = "fill"
+        if sweepTouched then cleanupPending = true end
+        sweepTouched = false
+    end
+    local function beginBatch(phase, view)
+        state.batchPhase, plantingStarted = phase, false
+        local n=seedCount(view)
+        local left,right=view.seedSlots[1].distance,view.seedSlots[n].distance
+        rowDirection = finite(right) and (not finite(left) or right<left) and -1 or 1
+        rowCursor = rowDirection==1 and 1 or n
+        if phase=="growing" then mode,cursor,state.blockIndex="fill",1,1 end
+        if phase=="planting" or phase=="harvesting" then initialCleanupNeeded=true end
+    end
+    local function restoreProgress(view)
+        local hint = resumeHint
+        resumeHint = nil
+        if not hint or hint.version ~= 1 or hint.world ~= world or hint.mode ~= farmMode
+            or hint.rowKey ~= rowKey(view) or hint.blockCount ~= blockCount(view)
+            or hint.seedCount ~= (farmMode == "break_only" and 0 or seedCount(view)) then return false end
+        if farmMode == "break_only" then
+            if hint.phase ~= "blocks" then return false end
+            state.batchPhase = "blocks"
+        else
+            if hint.phase ~= "planting" and hint.phase ~= "growing" and hint.phase ~= "harvesting" then return false end
+            if (hint.rowDirection ~= 1 and hint.rowDirection ~= -1) or not finite(hint.rowCursor)
+                or hint.rowCursor % 1 ~= 0 or hint.rowCursor < 1 or hint.rowCursor > seedCount(view) then return false end
+            state.batchPhase, rowDirection, rowCursor = hint.phase, hint.rowDirection, hint.rowCursor
+            plantingStarted = hint.phase == "planting" and hint.plantingStarted == true
+        end
+        -- Inspect native blocks and clean leftovers anew; never restore a sent
+        -- request, receipt timer, pickup movement or inventory counter.
+        mode = "fill"
+        cursor = finite(hint.blockCursor) and hint.blockCursor % 1 == 0
+            and hint.blockCursor >= 1 and hint.blockCursor <= blockCount(view) and hint.blockCursor or 1
+        state.blockIndex = cursor
+        initialCleanupNeeded = true
+        return true
+    end
+    local function send(kind, i, now, before)
+        local fn = adapter[kind]
+        if type(fn) ~= "function" then stop("Native " .. kind .. " action is unavailable.") return end
+        local ok, sent, readyAt = pcall(fn, i)
+        if state.closed or not state.running or revision ~= before then return end
+        if ok and finite(readyAt) and readyAt > now then nextAction = readyAt
+        else nextAction = now + actionInterval end
+        if not ok then stop(kind .. " paused: " .. tostring(sent):sub(1, 110)) return end
+        if sent ~= true then
+            status("waiting", "Waiting for native " .. kind .. " readiness at slot " .. i .. ".")
+            return false
+        end
+        if kind == "PunchBlock" then
+            state.punches = state.punches + 1
+            overheadDirty, sweepTouched = true, true
+        else
+            local id = key(kind, i)
+            attempts[id] = (attempts[id] or 0) + 1
+            pending[id] = { kind = kind, index = i, expires = now + confirmationTimeout }
+        end
+        return true
+    end
+    local function step(now)
+        state.allowPickupTravel = false
+        state.restocking = false
+        if not state.running or state.closed then return end
+        local before = revision
+        local view, waiting, blocked = read()
+        if state.closed or not state.running or revision ~= before then return end
+        if not view then
+            release()
+            if blocked then stop(waiting) else status("waiting", waiting) end
+            return
+        end
+        local overheadCount, rowCount = blockCount(view), seedCount(view)
+        if activeBlockCount and overheadCount ~= activeBlockCount then
+            stop("Overhead layout changed. Press START to use the new block count.") return
+        end
+        if farmMode ~= "break_only" and activeSeedCount and rowCount ~= activeSeedCount then
+            stop("Seed row layout changed. Press START to use the new seed count.") return
+        end
+        if activeRowKey and rowKey(view)~=activeRowKey then stop("Farm row changed. Press START at the new row.") return end
+        local firstView = activeRowKey == nil
+        activeBlockCount, activeSeedCount = overheadCount, rowCount
+        activeRowKey=rowKey(view)
+        counts(view)
+        if firstView then
+            if farmMode == "break_only" then state.batchPhase="blocks" end
+            restoreProgress(view)
+        end
+        if not settle(view, now) then return end
+        if finite(view.nextReadyAt) then nextAction = math.max(nextAction, view.nextReadyAt) end
+        local missing, plantingPending = 0, false
+        if farmMode ~= "break_only" then
+        for i = 1, rowCount do
+            if view.seedSlots[i].state == "empty" then
+                if isPending("Plant", i) then plantingPending = true else missing = missing + 1 end
+            end
+        end
+        -- Finish a block-drop receipt/cleanup before refilling or switching to
+        -- tree work, even when maturity/stock changes during a partial sweep.
+        local treeWorkNext = state.batchPhase=="growing" and (missing>0 or plantingPending or state.mature==rowCount)
+            or state.batchPhase=="planting" and not plantingStarted and missing>0 and view.seeds>=missing
+        if cleanupPending and not overheadDirty and treeWorkNext then
+            -- An initial scan has no punch-derived receipt to protect. Do not
+            -- let unrelated/stale drops delay a newly ready planting/harvest pass.
+            release()
+            if state.closed or not state.running or revision ~= before then return end
+            cleanupPending = false
+        end
+        if (cleanupPending or overheadDirty and treeWorkNext) and not cleanup(now,before) then return end
+        if not rowCursor then beginBatch(state.batchPhase,view) end
+        if state.batchPhase=="growing" and (missing>0 or plantingPending) then beginBatch("planting",view) end
+        if state.batchPhase=="harvesting" and state.occupied==0 then beginBatch("planting",view) end
+        if state.batchPhase=="planting" then
+            if missing==0 and not plantingPending then
+                beginBatch("growing",view)
+            elseif not plantingStarted and view.seeds<missing then
+                -- Before a planting batch begins, build seed stock using the
+                -- same centered overhead loop used while trees are growing.
+                state.restocking=true
+            else
+                plantingStarted=true
+                for _=1,rowCount do
+                    if rowCursor<1 or rowCursor>rowCount then
+                        beginBatch("planting",view)
+                        status("waiting","Checking unfinished seed slots before the next planting pass.")
+                        return
+                    end
+                    local i=rowCursor
+                    if view.seedSlots[i].state=="empty" then
+                        if isPending("Plant",i) then status("waiting","Waiting for planting confirmation.") return end
+                        if view.seeds<1 then status("waiting","Need "..missing.." "..state.seedName.." to finish this planting batch.") release() return end
+                        status("planting","Planting "..state.seedName.." "..i.."/"..rowCount.." · fixed sweep.")
+                        if prepare("Plant",i,now,before) and now>=nextAction then send("Plant",i,now,before) end
+                        return
+                    end
+                    rowCursor=rowCursor+rowDirection
+                end
+                return
+            end
+        end
+        if state.batchPhase=="growing" and state.mature==rowCount then beginBatch("harvesting",view) end
+        if state.batchPhase=="harvesting" then
+            for _=1,rowCount do
+                if rowCursor<1 or rowCursor>rowCount then rowCursor=rowDirection==1 and 1 or rowCount end
+                local i=rowCursor
+                if isPending("Harvest",i) then status("waiting","Waiting for harvest confirmation.") return end
+                local slot=view.seedSlots[i]
+                if slot.state=="mature" then
+                    status("harvesting","Harvesting "..state.blockName.." tree "..i.."/"..rowCount.." · finish the row before replanting.")
+                    if prepare("Harvest",i,now,before) and now>=nextAction then send("Harvest",i,now,before) end
+                    return
+                elseif slot.state=="growing" then
+                    release()
+                    status("waiting","Waiting for tree "..i.."/"..rowCount.." to mature before finishing this harvest batch.")
+                    return
+                end
+                rowCursor=rowCursor+rowDirection
+            end
+            return
+        end
+        else
+            if cleanupPending and not cleanup(now,before) then return end
+        end
+        -- Tree work can take the character along the extended row. Return to the
+        -- original block-farm center before overhead work or waiting for stock.
+        if not prepare("Return", nil, now, before) then return end
+        if initialCleanupNeeded and not cleanup(now,before) then return end
+        state.allowPickupTravel=not state.restocking
+        local function overheadStatus(phase,message)
+            if state.restocking then
+                status("restocking","Need "..(missing-view.seeds).." more "..state.seedName.." before planting. "..message)
+            else status(phase,message) end
+        end
+        if mode == "fill" then
+            local placementPending = false
+            for i = 1, overheadCount do
+                if view.blockSlots[i].state == "empty" then
+                    if isPending("Place", i) then placementPending = true
+                    elseif view.blocks > 0 then
+                        overheadStatus("placing", "Placing "..state.blockName.." above the character " .. i .. "/" .. overheadCount .. ".")
+                        if prepare("Place", i, now, before) and now >= nextAction then send("Place", i, now, before) end
+                        return
+                    end
+                end
+            end
+            if placementPending then overheadStatus("waiting", "Waiting for block placement confirmation.") return end
+            mode = "punch"
+        end
+        -- Each successful punch advances one overhead slot. A completed sweep
+        -- refills missing blocks; a newly planted row starts overhead work at 1.
+        for _ = 1, overheadCount do
+            local i = cursor
+            state.blockIndex = i
+            if view.blockSlots[i].state == "grass" then
+                local sequence = overheadCount == 3 and "1 → 2 → 3" or "1 → 2 → 3 → 4 → 5"
+                overheadStatus("punching", "Punching "..state.blockName.." " .. i .. "/" .. overheadCount .. " · repeat " .. sequence .. ".")
+                if prepare("PunchBlock", i, now, before) and now >= nextAction and send("PunchBlock", i, now, before) then
+                    cursor = i == overheadCount and 1 or i + 1
+                    state.blockIndex = cursor
+                    if i == overheadCount then finishSweep() end
+                end
+                return
+            end
+            cursor = i == overheadCount and 1 or i + 1
+            state.blockIndex = cursor
+            if i == overheadCount then finishSweep() break end
+        end
+        overheadStatus("waiting", "Waiting for "..state.blockName..(farmMode == "break_only" and " blocks." or " blocks / seeds."))
+    end
+    function api.Start()
+        if state.closed then return false end
+        revision = revision + 1
+        release()
+        state.running = true
+        state.allowPickupTravel=false
+        state.restocking=false
+        state.planted, state.placed, state.punches, state.harvested, state.blockIndex = 0, 0, 0, 0, 1
+        nextAction, attempts = 0, {}
+        status("starting", farmMode == "break_only" and "Preparing overhead blocks at the saved position."
+            or "Preparing the selected seed row at the saved farm position.")
+        local before = revision
+        local view, waiting, blocked = read()
+        if state.closed or not state.running or revision ~= before then return false end
+        if view then
+            local changed=not activeRowKey or rowKey(view)~=activeRowKey
+                or farmMode ~= "break_only" and activeSeedCount~=seedCount(view)
+            if changed then
+                pending={}
+                cleanupPending, initialCleanupNeeded, overheadDirty, sweepTouched = false, true, false, false
+                if farmMode == "break_only" then state.batchPhase="blocks"
+                else beginBatch("planting",view) end
+            end
+            if changed or activeBlockCount~=blockCount(view) then mode,cursor,state.blockIndex="fill",1,1 end
+            if changed then restoreProgress(view) end
+            activeBlockCount,activeSeedCount,activeRowKey=blockCount(view),seedCount(view),rowKey(view)
+            counts(view)
+        elseif blocked then stop(waiting)
+        else status("waiting", waiting) end
+        return state.running
+    end
+    function api.Stop()
+        if not state.closed then stop("Stopped manually.") end
+    end
+    function api.ExportProgress()
+        if not activeRowKey then return nil end
+        return {
+            version=1, world=world, mode=farmMode, rowKey=activeRowKey,
+            seedCount=farmMode == "break_only" and 0 or activeSeedCount, blockCount=activeBlockCount,
+            phase=state.batchPhase, rowDirection=rowDirection, rowCursor=rowCursor,
+            plantingStarted=plantingStarted, blockCursor=cursor,
+        }
+    end
+    function api.Step(now)
+        if stepping or not finite(now) then return end
+        stepping = true
+        local ok, failure = pcall(step, now)
+        stepping = false
+        if not ok and not state.closed then stop("Farm paused: " .. tostring(failure):sub(1, 130)) end
+    end
+    function api.Close()
+        if state.closed then return end
+        stop("Closed.")
+        state.closed = true
+    end
+    return api
+end
+
+end)()
+
+local makePickupDriver = (function()
+-- Short native walking/jumping trips along the configured farm, then back to center.
+return function(adapter, options)
+    options=options or {}
+    local rowRadius=options.radius or 2
+    assert(rowRadius==2 or rowRadius==10,"Unsupported pickup row radius.")
+    local state = { busy = false, status = "Pickup idle.", failed = nil, targetUid = nil, returning = false }
+    local api = { State = state }
+    local anchorX, anchorY, routeStarted, targetStarted, targetUid
+    local moveDirection, jumpHeld, jumpUntil, nextJump = 0, false, nil, 0
+    local moveSince, moveX, cooldownUntil, stepping = nil, nil, 0, false
+    local ignored, released, revision = {}, true, 0
+    local function finite(n) return type(n) == "number" and n == n and n > -math.huge and n < math.huge end
+    local function validUid(uid) return type(uid) == "string" and uid ~= "" or finite(uid) end
+    local function releaseAll(force)
+        if force or not released then
+            if type(adapter.Release) == "function" then pcall(adapter.Release)
+            else
+                if type(adapter.Move) == "function" then pcall(adapter.Move, 0) end
+                if type(adapter.Jump) == "function" then pcall(adapter.Jump, false) end
+            end
+        end
+        moveDirection, jumpHeld, jumpUntil, moveSince, moveX, released = 0, false, nil, nil, nil, true
+    end
+    local function resetRoute()
+        state.busy, state.returning, state.targetUid = false, false, nil
+        anchorX, anchorY, routeStarted, targetStarted, targetUid = nil, nil, nil, nil, nil
+    end
+    local function cancel(message, force)
+        revision = revision + 1
+        releaseAll(force)
+        resetRoute()
+        state.failed, state.status = nil, message or "Pickup stopped."
+    end
+    local function fail(message)
+        revision = revision + 1
+        releaseAll(true)
+        resetRoute()
+        state.failed, state.status = message, message
+    end
+    local function move(direction)
+        if direction ~= moveDirection then
+            local before = revision
+            adapter.Move(direction)
+            if revision ~= before then return end
+            moveDirection = direction
+            if direction ~= 0 then released = false end
+        end
+        if direction == 0 then moveSince, moveX = nil, nil end
+    end
+    local function jump(down)
+        if jumpHeld == down then return true end
+        local before = revision
+        adapter.Jump(down)
+        if revision ~= before then return false end
+        jumpHeld = down
+        if down then released = false else jumpUntil = nil end
+        return true
+    end
+    local function grounded(view)
+        return view.grounded == true and math.abs(view.y - anchorY) < 0.15
+    end
+    local function eligible(drop, ax, ay)
+        return type(drop) == "table" and validUid(drop.uid) and finite(drop.x) and finite(drop.y)
+            and (drop.id == 16 or drop.id == 17 or drop.id == 112)
+            and (drop.n == nil or finite(drop.n) and drop.n > 0)
+            and math.abs(drop.x - ax) <= rowRadius+.9 and drop.y >= ay - 2 and drop.y <= ay + 1
+            and not ignored[drop.uid]
+    end
+    local function dropsAt(view, ax, ay)
+        local present, candidates = {}, {}
+        for _, drop in pairs(type(view.drops) == "table" and view.drops or {}) do
+            if type(drop) == "table" and validUid(drop.uid) then present[drop.uid] = true end
+            if eligible(drop, ax, ay) then candidates[#candidates + 1] = drop end
+        end
+        -- A timed-out uid is ignored until it disappears, preventing endless jumps.
+        for uid in pairs(ignored) do if not present[uid] then ignored[uid] = nil end end
+        return candidates
+    end
+    local function choose(candidates, x, y)
+        local best, distance
+        for _, drop in ipairs(candidates) do
+            local d = math.abs(drop.x - x) + math.abs(drop.y - y) * 0.2
+            if not best or d < distance then best, distance = drop, d end
+        end
+        return best
+    end
+    local function walkToward(x, destination, now)
+        local dx = destination - x
+        if math.abs(dx) <= 0.3 then move(0) return true end
+        local direction = dx < 0 and -1 or 1
+        if not moveSince then moveSince, moveX = now, x
+        elseif math.abs(x - moveX) > 0.15 then moveSince, moveX = now, x end
+        if now - moveSince >= 8 then fail("Pickup path blocked for 8 seconds.") return false end
+        move(direction)
+        return false
+    end
+    local function finish(now)
+        releaseAll(true)
+        resetRoute()
+        cooldownUntil = now + 0.8
+        state.status = "Back at farm center."
+    end
+    local function step(now)
+        if jumpHeld and jumpUntil and now >= jumpUntil then jump(false) end
+        local before = revision
+        local ok, view = pcall(adapter.View)
+        if revision ~= before then return end
+        if not ok or type(view) ~= "table" then cancel("Waiting for pickup data.") return end
+        if view.enabled ~= true then cancel("Pickup stopped.") return end
+        if view.ready ~= true then cancel("Waiting for the farm world.") return end
+        if not finite(view.x) or not finite(view.y) or not finite(view.anchorX) or not finite(view.anchorY) then
+            cancel("Waiting for valid pickup position.") return
+        end
+        if state.failed then return end
+        if state.busy then
+            if math.abs(view.anchorX - anchorX) > 0.001 or math.abs(view.anchorY - anchorY) > 0.001 then
+                cancel("Farm anchor changed; pickup cancelled.") return
+            end
+            if math.abs(view.x - anchorX) > rowRadius+2 then fail("Pickup left the farm row.") return end
+            if view.y - anchorY > .6 then fail("Pickup fell below the farm platform.") return end
+            if now-routeStarted>=20 then fail("Pickup could not return to the farm platform.") return end
+        end
+        local candidates = dropsAt(view, state.busy and anchorX or view.anchorX, state.busy and anchorY or view.anchorY)
+        if not state.busy then
+            if now < cooldownUntil then return end
+            if math.abs(view.x - view.anchorX) > 0.5 or view.grounded ~= true or math.abs(view.y - view.anchorY) >= 0.15 then
+                state.status = "Stand at the farm center before pickup." return
+            end
+            if #candidates == 0 then state.status = "Pickup idle." return end
+            anchorX, anchorY, routeStarted, nextJump = view.anchorX, view.anchorY, now, now
+            state.busy, state.returning = true, false
+        end
+        if now - routeStarted >= 12 then state.returning = true end
+        local target
+        if not state.returning then
+            if targetUid then
+                for _, drop in ipairs(candidates) do if drop.uid == targetUid then target = drop break end end
+                if target and now - targetStarted >= 3 then
+                    ignored[targetUid], target = true, nil
+                    local filtered = {}
+                    for _, drop in ipairs(candidates) do if not ignored[drop.uid] then filtered[#filtered + 1] = drop end end
+                    candidates = filtered
+                end
+            end
+            if not target then
+                target = choose(candidates, view.x, view.y)
+                targetUid, targetStarted = target and target.uid or nil, target and now or nil
+                state.targetUid = targetUid
+            end
+            if not target then state.returning = true end
+        end
+        if state.returning then
+            targetUid, targetStarted, state.targetUid = nil, nil, nil
+            state.status = "Returning to farm center."
+            jump(false)
+            local aligned = walkToward(view.x, anchorX, now)
+            if not state.busy then return end
+            if aligned and grounded(view) then finish(now) end
+            return
+        end
+        state.status = "Picking up Grass / seeds / gems."
+        local aligned = walkToward(view.x, target.x, now)
+        if not state.busy then return end
+        if aligned and target.y < view.y - 0.85 and grounded(view) and not jumpHeld and now >= nextJump then
+            if jump(true) then jumpUntil, nextJump = now + 0.12, now + 0.8 end
+        end
+    end
+    function api.Step(now)
+        if stepping or not finite(now) then return end
+        stepping = true
+        local ok, failure = pcall(step, now)
+        stepping = false
+        if not ok then fail("Pickup stopped: " .. tostring(failure):sub(1, 110)) end
+    end
+    function api.Cancel()
+        cancel("Pickup stopped.", true)
+        cooldownUntil, ignored = 0, {}
+    end
+    return api
+end
+
+end)()
+
+local makeAdapter = (function()
+-- Native paired seed/block actions: a captured configurable row and three overhead slots.
+return function(player, app)
+    local R = game:GetService("ReplicatedStorage")
+    local Input = game:GetService("UserInputService")
+    local items, areaLock = require(R.Shared.ItemDB), require(R.Shared.AreaLock)
+    local ctx, hit, act, helpers, inventory, canPlace, plantSeed, setTile, treeRipe
+    for _, connection in ipairs(getconnections(R.WorldRemotes.TileChanged.OnClientEvent)) do
+        if type(connection.Function) == "function" then
+            for _, value in pairs(debug.getupvalues(connection.Function)) do
+                if type(value) == "table" and type(value.atTile) == "function" and type(value.fg) == "table" then ctx = value break end
+            end
+        end
+        if ctx then break end
+    end
+    assert(ctx, "Masuk world terlebih dahulu, lalu run ulang.")
+    for _, fn in pairs(getgc(true)) do
+        if type(fn) == "function" then
+            local ok, name = pcall(debug.info, fn, "n")
+            if ok and (name == "hit" or name == "act") then
+                local u = debug.getupvalues(fn)
+                if name == "hit" and u[1] == ctx and type(u[2]) == "table" then hit, helpers, treeRipe = fn, u[2], u[11] end
+                if name == "act" and u[6] == ctx then act, inventory, canPlace, setTile, plantSeed = fn, u[14], u[22], u[24], u[30] end
+            end
+        end
+    end
+    assert(hit and act and type(canPlace) == "function" and type(plantSeed) == "function" and type(setTile) == "function"
+        and type(treeRipe) == "function" and type(inventory) == "table" and type(inventory.count) == "function", "Native farm interface belum siap.")
+    assert(debug.info(canPlace, "n") == "canPlace" and debug.info(plantSeed, "n") == "plantSeed"
+        and debug.info(setTile, "n") == "setTile", "Native farm interface berubah.")
+    local adapter = { Context = ctx, ReadyAt = 0, Recent = {}, Collected = 0, BlockCount = 3, SeedCount = 21, RowRadius = 10,
+        CollectedBlocks = 0, CollectedSeeds = 0, CollectedGems = 0 }
+    local sessionJob = game.JobId
+    local failedPickup,retryAt={},{}
+    local PICKUP_FAILURE_LIMIT,PICKUP_DEFER_SECONDS,CLEANUP_BLOCK_SECONDS=3,15,8
+    local blockClaims,breakWindows,firstSeen,rejectedClaims={},{},{},{}
+    local provenanceBinding,provenanceEpoch=nil,0
+    local function clearBlockProvenance()
+        blockClaims,breakWindows,firstSeen,rejectedClaims={},{},{},{}
+        failedPickup,retryAt={},{}
+        provenanceBinding=nil
+        provenanceEpoch=provenanceEpoch+1
+    end
+    local crops, cropBySeed = {}, {}
+    local excluded = { "lock", "area", "door", "entrance", "portal", "checkpoint", "provider", "toggle", "spin",
+        "dice", "vend", "hub", "display", "displayOne", "donation", "combiner", "hurts", "deadly", "bumper", "laser", "fruits" }
+    -- Ordinary native tree fruit is seedId - 1. Family seeds override that with
+    -- fruits / seedId aliases and are intentionally outside this one-pair flow.
+    for id, seed in pairs(items) do
+        if type(id)=="number" and id%1==0 and id>0 and type(seed)=="table" and seed.kind=="seed" and not seed.fruits then
+            local block=rawget(items,id-1)
+            local allowed=type(block)=="table" and block.farmable==true and not block.background and not block.kind
+                and type(block.hits)=="number" and block.hits>0 and block.hits<math.huge
+                and (block.seedId==nil or block.seedId==id)
+            -- Normal Lava is an explicitly requested farm pair. It still uses
+            -- the same native placement/range checks and stationary pickup.
+            local normalLava=allowed and id==5 and block.name=="Lava" and seed.name=="Lava Seed"
+            if allowed then
+                for _,field in ipairs(excluded) do
+                    if block[field] and not (normalLava and field=="hurts") then allowed=false break end
+                end
+            end
+            if allowed then
+                local crop={seedId=id,blockId=id-1,seedName=tostring(seed.name or id),blockName=tostring(block.name or id-1),
+                    grow=type(seed.grow)=="number" and seed.grow or 0}
+                crops[#crops+1]=crop cropBySeed[id]=crop
+            end
+        end
+    end
+    table.sort(crops,function(a,b)
+        local an,bn=a.blockName:lower(),b.blockName:lower()
+        return an==bn and a.seedId<b.seedId or an<bn
+    end)
+    local selectedCrop=assert(cropBySeed[17],"Pasangan Grass tidak tersedia pada katalog native.")
+    local seedId,blockId=selectedCrop.seedId,selectedCrop.blockId
+    local function cropRecord(crop)
+        return {seedId=crop.seedId,blockId=crop.blockId,seedName=crop.seedName,blockName=crop.blockName,grow=crop.grow,
+            seeds=math.max(0,inventory:count(crop.seedId)),blocks=math.max(0,inventory:count(crop.blockId))}
+    end
+    function adapter.ListCrops()
+        local result={}
+        for i,crop in ipairs(crops) do result[i]=cropRecord(crop) end
+        table.sort(result,function(a,b)
+            local ownedA,ownedB=a.seeds>0 or a.blocks>0,b.seeds>0 or b.blocks>0
+            if ownedA~=ownedB then return ownedA end
+            local an,bn=a.blockName:lower(),b.blockName:lower()
+            return an==bn and a.seedId<b.seedId or an<bn
+        end)
+        return result
+    end
+    function adapter.GetCrop() return cropRecord(selectedCrop) end
+    local function position()
+        local u = debug.getupvalues(ctx.atTile)
+        assert(type(u[1]) == "number" and type(u[2]) == "number", "Posisi belum siap.")
+        return u[1], u[2]
+    end
+    local function inside(x,y) return x >= 0 and y >= 0 and x < ctx.w and y < ctx.h end
+    local function fg(x,y) return inside(x,y) and ctx.fg[y] and ctx.fg[y][x] end
+    local function trees() return debug.getupvalues(hit)[10] end
+    local function farmMode() return app.Mode==nil and "farm" or app.Mode end
+    function adapter.GetPlantLayout()
+        local count=app.PlantCount==nil and 21 or app.PlantCount
+        if type(count)~="number" or count~=count or count%1~=0 or count<1 or count>99 then
+            return nil,"Jumlah tanaman harus bilangan bulat 1 sampai 99."
+        end
+        local left=math.floor((count-1)/2)
+        local right=count-1-left
+        adapter.SeedCount,adapter.RowLeft,adapter.RowRight,adapter.RowRadius=count,left,right,math.max(left,right)
+        return {count=count,left=left,right=right}
+    end
+    function adapter.IsWorldAuthorized()
+        local owned = type(ctx.lock) == "table" and ctx.lock.owner == player.UserId
+        local approved = type(app.AllowedWorlds) == "table" and app.AllowedWorlds[ctx.name] == true
+        return owned or approved
+    end
+    local function worldIssue()
+        if not app.Alive then return "Farm sudah ditutup." end
+        if farmMode()~="farm" and farmMode()~="break_only" then return "Mode farm tidak valid; pilih Farm atau Break Only." end
+        if farmMode()=="farm" then
+            local layout,issue=adapter.GetPlantLayout()
+            if not layout then return issue end
+        end
+        if game.JobId ~= sessionJob then return "Server berubah; jalankan ulang skrip dan SET TITIK." end
+        if not adapter.IsWorldAuthorized() then return "World ini bukan milik akun ini atau belum diizinkan untuk farm." end
+        if type(app.World) ~= "string" or app.World ~= ctx.name then return "World berubah; hentikan farm lalu SET TITIK di world ini." end
+        if type(ctx.lock) ~= "table" or areaLock.hasAccess(ctx.lock, player.UserId) ~= true then
+            return "Akses ke world lock diperlukan untuk farm."
+        end
+    end
+    local function anchorIssue()
+        local issue = worldIssue()
+        if issue then return issue end
+        local a = app.Anchor
+        if type(a) ~= "table" then return "Berdiri di tempat farm, lalu SET TITIK." end
+        if a.world ~= ctx.name then return "Titik farm berasal dari world lain; SET TITIK ulang." end
+        if a.job ~= game.JobId then return "Titik farm berasal dari server lain; SET TITIK ulang." end
+        if (a.mode or "farm")~=farmMode() then return "Mode farm berubah; SET TITIK ulang sebelum START." end
+        if farmMode()=="farm" and (a.plantCount or 21)~=adapter.GetPlantLayout().count then
+            return "Jumlah tanaman berubah; SET TITIK ulang sebelum START."
+        end
+        if type(a.x) ~= "number" or type(a.y) ~= "number" or a.x ~= a.x or a.y ~= a.y
+            or a.x % 1 ~= 0 or a.y % 1 ~= 0 then return "Titik farm tidak valid; SET TITIK ulang." end
+    end
+    local function sameProvenance()
+        local b=provenanceBinding
+        local a=app.Anchor
+        return b and a and b.anchor==a and b.world==ctx.name and b.job==game.JobId
+            and b.x==a.x and b.y==a.y and b.mode==farmMode() and b.count==(a.plantCount or 21)
+            and b.seedId==seedId and b.blockId==blockId and not anchorIssue()
+    end
+    local function refreshBlockProvenance(now)
+        if provenanceBinding and not sameProvenance() then clearBlockProvenance() end
+        if not provenanceBinding then return end
+        local live={}
+        for _,d in pairs(ctx.dropList()) do
+            if type(d)=="table" and d.uid~=nil then
+                live[d.uid]=d
+                if not firstSeen[d.uid] then
+                    firstSeen[d.uid]={object=d,id=d.id,n=d.n,x=d.x,y=d.y,born=d.born}
+                end
+                local claim=blockClaims[d.uid]
+                if claim then
+                    if claim.object~=d or claim.id~=d.id or type(d.n)~="number" or d.n>claim.lastN or d.pending or d.display then
+                        blockClaims[d.uid]=nil rejectedClaims[d.uid]=true
+                        failedPickup[d.uid],retryAt[d.uid]=nil,nil
+                    else claim.lastN=d.n end
+                end
+            end
+        end
+        for uid in pairs(blockClaims) do if not live[uid] then
+            blockClaims[uid]=nil failedPickup[uid],retryAt[uid]=nil,nil
+        end end
+        for uid in pairs(firstSeen) do if not live[uid] then firstSeen[uid]=nil end end
+        for uid in pairs(rejectedClaims) do if not live[uid] then rejectedClaims[uid]=nil end end
+        for i=#breakWindows,1,-1 do
+            local window=breakWindows[i]
+            if now>window.expires then table.remove(breakWindows,i)
+            else
+                for uid,d in pairs(live) do
+                    local born=firstSeen[uid]
+                    if not blockClaims[uid] and not rejectedClaims[uid] and not window.baseline[uid]
+                        and born.object==d and born.id==d.id and born.n==d.n
+                        and (d.id==window.blockId or d.id==window.seedId or d.id==112)
+                        and type(d.n)=="number" and d.n>0 and not d.pending and not d.display
+                        and type(born.born)=="number" and born.born>=window.started and born.born<=window.expires
+                        and type(born.x)=="number" and type(born.y)=="number"
+                        and math.abs(born.x-(window.x+.5))<=.75 and math.abs(born.y-(window.y+.5))<=.4 then
+                        blockClaims[uid]={object=d,id=d.id,lastN=d.n}
+                    end
+                end
+            end
+        end
+    end
+    local function beginBlockBreak(x,y,started,baseline)
+        if not sameProvenance() then
+            clearBlockProvenance()
+            local a=app.Anchor
+            provenanceBinding={anchor=a,world=ctx.name,job=game.JobId,x=a.x,y=a.y,mode=farmMode(),
+                count=a.plantCount or 21,seedId=seedId,blockId=blockId}
+        end
+        breakWindows[#breakWindows+1]={x=x,y=y,started=started,expires=started+1.25,
+            baseline=baseline,blockId=blockId,seedId=seedId}
+        refreshBlockProvenance(os.clock())
+    end
+    local function pickupEligible(d,now)
+        local claim=blockClaims[d.uid]
+        return claim and claim.object==d and (claim.deferredUntil or 0)<=now
+    end
+    local function deferBlockPickup(d,now,reason)
+        local claim=blockClaims[d.uid]
+        if not claim or claim.object~=d then return end
+        claim.blockingExhausted=true
+        claim.deferredUntil=now+PICKUP_DEFER_SECONDS
+        claim.deferReason=reason
+        retryAt[d.uid]=claim.deferredUntil
+    end
+    local function permitted(x,y,build)
+        return worldIssue() == nil and inside(x,y)
+            and not (ctx.lock.x == x and ctx.lock.y == y)
+            and ctx.areas.mayBuild(ctx.lock,x,y) == true and ctx.builderOk(x,y,build == true) == true
+    end
+    local function paused()
+        if Input:GetFocusedTextBox() then return "Dijeda saat mengetik." end
+        if player:GetAttribute("Frozen") == true then return "Menunggu karakter siap." end
+        local u = debug.getupvalues(ctx.goTo)
+        if u[4] == true then return "Menunggu respawn; kembali ke titik farm." end
+    end
+    local function atAnchor()
+        local a = app.Anchor
+        if anchorIssue() then return false end
+        local px,py = position()
+        return math.floor(px) == a.x and math.floor(py-.475) == a.y
+    end
+    local function coords(i, overhead)
+        local layout=adapter.GetPlantLayout()
+        local limit=overhead and 3 or (layout and layout.count or 0)
+        if type(i) ~= "number" or i % 1 ~= 0 or i < 1 or i > limit or not app.Anchor then return end
+        return app.Anchor.x + i - (overhead and 2 or layout.left+1), app.Anchor.y - (overhead and 1 or 0)
+    end
+    local function inRange(x,y,build)
+        local px,py = position()
+        local range = build and helpers.buildRange() or helpers.punchRange()
+        return type(range) == "number" and math.abs(x+.5-px) <= range and math.abs(y+.5-(py-.475)) <= range
+    end
+    local virtualInput,held=game:GetService("VirtualInputManager"),{}
+    local getIdentity=getthreadidentity or getidentity
+    local setIdentity=setthreadidentity or setidentity
+    local navigation, blockCleanup, recovery
+    local function key(code,down)
+        if held[code]==down or (not down and not held[code]) then return end
+        -- Volt callbacks can lose the input capability after native game calls.
+        -- Restore the executor's input context only for this call, then restore it.
+        local previous
+        if type(getIdentity)=="function" then local ok,value=pcall(getIdentity) if ok then previous=value end end
+        if previous~=nil and type(setIdentity)=="function" then pcall(setIdentity,8) end
+        local sent,failure=pcall(function() virtualInput:SendKeyEvent(down,code,false,game) end)
+        if previous~=nil and type(setIdentity)=="function" then pcall(setIdentity,previous) end
+        if not sent then error("Kontrol keyboard Volt belum siap: "..tostring(failure)) end
+        held[code]=down or nil
+    end
+    local function releaseMovement()
+        for _,code in ipairs({Enum.KeyCode.Left,Enum.KeyCode.Right,Enum.KeyCode.Up,Enum.KeyCode.Space}) do pcall(key,code,false) end
+        navigation=nil
+        adapter.TravelBusy=false
+    end
+    function adapter.Release()
+        releaseMovement()
+        blockCleanup=nil
+        recovery=nil
+        if not app.Alive or not app.Engine or not app.Engine.State.running then clearBlockProvenance() end
+    end
+    local function withinFarm()
+        local a=app.Anchor
+        if anchorIssue() then return false end
+        local x,y=position()
+        local layout=adapter.GetPlantLayout()
+        local left=farmMode()=="break_only" and 2.5 or math.max(layout.left+2,2.5)
+        local right=farmMode()=="break_only" and 2.5 or math.max(layout.right+2,2.5)
+        return x>=a.x+.5-left and x<=a.x+.5+right and math.abs(y-(a.y+1))<=3.2
+    end
+    local function directPickupRange(d,x,y)
+        -- This short-range rectangle was accepted live for the three overhead
+        -- slots. Every request still needs a positive server receipt.
+        return math.abs(d.x-x)<=1.3 and math.abs(d.y-(y-.475))<=1.3
+    end
+    local function centralDrop(d,a)
+        return type(d.x)=="number" and type(d.y)=="number" and not d.display
+            and math.abs(d.x-(a.x+.5))<=2.25 and d.y>=a.y-1.35 and d.y<=a.y+1.05
+    end
+    local function dropInFarmScope(d,a)
+        if farmMode()=="break_only" then return centralDrop(d,a) end
+        if centralDrop(d,a) then return true end
+        local layout=adapter.GetPlantLayout()
+        return layout and d.x>=a.x+.5-layout.left-.9 and d.x<=a.x+.5+layout.right+.9
+            and math.abs(d.y-(a.y+.5))<=2 or false
+    end
+    local function centralDrops()
+        local result,available,full,deferred={},0,0,0
+        if anchorIssue() then return result,available,full,deferred end
+        refreshBlockProvenance(os.clock())
+        local a=app.Anchor
+        for _,d in pairs(ctx.dropList()) do
+            if type(d)=="table" and blockClaims[d.uid] and blockClaims[d.uid].object==d
+                and type(d.n)=="number" and d.n>0 and centralDrop(d,a) then
+                result[#result+1]=d
+                if d.id~=112 and inventory:room(d.id)<=0 then full=full+1
+                elseif blockClaims[d.uid].blockingExhausted then deferred=deferred+1
+                else available=available+1 end
+            end
+        end
+        return result,available,full,deferred
+    end
+    function adapter.Move(direction)
+        if not app.Alive or not app.Engine or not app.Engine.State.running or paused() or not withinFarm() then adapter.Release() return end
+        key(Enum.KeyCode.Left,direction<0)
+        key(Enum.KeyCode.Right,direction>0)
+    end
+    function adapter.Jump(down)
+        if down and (not app.Alive or not app.Engine or not app.Engine.State.running or paused() or not withinFarm()) then adapter.Release() return end
+        key(Enum.KeyCode.Up,down==true)
+    end
+    function adapter.PickupView()
+        local a=app.Anchor
+        local enabled=app.Alive and app.Engine and app.Engine.State.running or false
+        if anchorIssue() or paused() then return {enabled=enabled,ready=false} end
+        refreshBlockProvenance(os.clock())
+        local x,y=position()
+        local layout=adapter.GetPlantLayout()
+        local result={enabled=enabled,ready=true,x=x,y=y,anchorX=a.x+.5,anchorY=a.y+1,
+            grounded=math.abs(y-(a.y+1))<.12,drops={},
+            plantCount=farmMode()=="break_only" and 0 or layout.count,
+            rowLeft=farmMode()=="break_only" and 0 or layout.left,rowRight=farmMode()=="break_only" and 0 or layout.right}
+        for _,d in pairs(ctx.dropList()) do
+            if type(d)=="table" and pickupEligible(d,os.clock()) and not blockClaims[d.uid].blockingExhausted and d.n>0
+                and (d.id==112 or inventory:room(d.id)>0) and dropInFarmScope(d,a)
+                and (not directPickupRange(d,x,y) or (failedPickup[d.uid] or 0)>0
+                    or (app.Pickup and app.Pickup.State.targetUid==d.uid)) then
+                result.drops[#result.drops+1]={uid=d.uid,x=d.x,y=d.y,id=d.id,n=d.n}
+            end
+        end
+        return result
+    end
+    local function breakOnlyLayoutIssue(a)
+        local tr=trees()
+        if type(tr)~="table" then return "Menunggu data area tiga blok." end
+        for x=a.x-1,a.x+1 do
+            local support=items[fg(x,a.y+1)]
+            if not support or (support.solid~=true and support.platform~=true)
+                or support.hurts or support.deadly or support.bumper or support.laser then
+                return "Break Only memerlukan lantai aman di tiga petak tengah."
+            end
+            if not permitted(x,a.y,false) or not permitted(x,a.y-1,false) then
+                return "Tiga petak tengah tidak memiliki izin farm."
+            end
+            local id=fg(x,a.y-1)
+            if tr[(a.y-1)*ctx.w+x] or (id~=0 and id~=blockId) then
+                return "Petak atas berisi benda selain "..selectedCrop.blockName.."."
+            end
+            if id==0 and not permitted(x,a.y-1,true) then return "Petak atas tidak memiliki izin memasang blok." end
+        end
+        local body=items[fg(a.x,a.y)]
+        if body and (body.solid or body.hurts or body.deadly or body.door or body.entrance or body.portal) then
+            return "Berdiri di ruang kosong yang aman untuk Break Only."
+        end
+    end
+    function adapter.Capture()
+        clearBlockProvenance()
+        adapter.Release()
+        local issue = worldIssue() or paused()
+        if issue then return nil, issue end
+        local x,y = position()
+        local mode=farmMode()
+        local layout=adapter.GetPlantLayout()
+        local a = {world=ctx.name, x=math.floor(x), y=math.floor(y-.475), job=game.JobId,mode=mode,plantCount=layout and layout.count or 21}
+        local left=mode=="break_only" and 1 or math.max(layout.left,1)
+        local right=mode=="break_only" and 1 or math.max(layout.right,1)
+        if a.x < left or a.x+right >= ctx.w or a.y < 1 or a.y+1 >= ctx.h then
+            return nil,mode=="break_only" and "Pilih titik dengan tiga petak atas di dalam world."
+                or "Baris "..layout.count.." tanaman memerlukan "..layout.left.." petak kiri dan "..layout.right.." petak kanan, serta tiga blok atas di dalam world."
+        end
+        if not permitted(a.x,a.y,true) then return nil, "Titik farm tidak memiliki izin membangun." end
+        if mode=="break_only" then
+            local layout=breakOnlyLayoutIssue(a)
+            if layout then return nil,layout end
+            if math.abs(y-(a.y+1))>.12 then return nil,"Mendarat di lantai dahulu sebelum SET TITIK Break Only." end
+        end
+        return a
+    end
+    function adapter.Inventory() return math.max(0,inventory:count(seedId)), math.max(0,inventory:count(blockId)) end
+    function adapter.Snapshot()
+        local mode=farmMode()
+        local layout=adapter.GetPlantLayout()
+        local s = {ready=false, world=ctx.name, mode=mode,atAnchor=false, canFarm=false, blockCount=3, seedCount=mode=="break_only" and 0 or (layout and layout.count or 0),
+            canTravel=true, allowPartialPlanting=true, seedSlots={}, blockSlots={},seedId=seedId,blockId=blockId,
+            seedName=selectedCrop.seedName,blockName=selectedCrop.blockName,crop=adapter.GetCrop(),
+            rowLeft=mode=="break_only" and 0 or (layout and layout.left or 0),rowRight=mode=="break_only" and 0 or (layout and layout.right or 0)}
+        s.seeds,s.blocks = adapter.Inventory()
+        local issue = anchorIssue()
+        if issue then s.message=issue s.invalidWorld=worldIssue()~=nil or app.Anchor~=nil return s end
+        local drops,available,full,deferred=centralDrops()
+        s.centralDrops,s.centralCollectible,s.centralCapacityBlocked,s.centralDeferred=#drops,available,full,deferred
+        s.centralCleanupStatus=adapter.LastBlockCleanup
+        local pause = paused()
+        if pause then s.message=pause return s end
+        if app.Pickup and app.Pickup.State.busy then s.message=app.Pickup.State.status return s end
+        s.ready=true
+        s.canFarm=true
+        s.atAnchor=atAnchor()
+        if not withinFarm() then s.canFarm=false s.message="Karakter keluar dari baris farm. STOP lalu kembali ke titik." return s end
+        local tr = trees()
+        if type(tr) ~= "table" then s.ready=false s.message="Menunggu data tanaman." return s end
+        if mode=="break_only" then
+            local layout=breakOnlyLayoutIssue(app.Anchor)
+            if layout then s.canFarm=false s.message=layout return s end
+        end
+        s.canFarm=true
+        local px,py=position()
+        for i=1,s.seedCount do
+            local x,y=coords(i,false)
+            local f,t=fg(x,y),tr[y*ctx.w+x]
+            local slot={state="blocked", x=x,y=y,distance=math.abs(x+.5-px)}
+            local support=items[fg(x,y+1)]
+            local floorOK=support and (support.solid==true or support.platform==true)
+            if permitted(x,y,false) then
+                if f==0 and not t then
+                    if floorOK and permitted(x,y,true) then slot.state="empty" else slot.message="Tanah/ruang tanam belum sesuai." end
+                elseif f==seedId then
+                    slot.state="growing"
+                    if t and type(t.p)=="number" then
+                        slot.remaining=math.max(0,t.p+selectedCrop.grow-workspace:GetServerTimeNow())
+                        if treeRipe(seedId,t) then slot.state="mature" end
+                    end
+                else slot.message="Petak tanam berisi benda selain "..selectedCrop.seedName.."." end
+            else slot.message="Petak tanam tidak dapat digunakan." end
+            if not floorOK then slot.state="blocked" slot.message="Tanah penopang baris farm terputus." end
+            s.seedSlots[i]=slot
+            if slot.state=="blocked" then s.message=slot.message .. " Slot " .. i .. "." end
+        end
+        for i=1,3 do
+            local bx,by=coords(i,true)
+            local bf=fg(bx,by)
+            local b={state="blocked",x=bx,y=by}
+            if permitted(bx,by,false) and not tr[by*ctx.w+bx] then
+                if bf==blockId then b.state="grass"
+                elseif bf==0 and permitted(bx,by,true) then b.state="empty"
+                else b.message="Petak atas berisi benda selain "..selectedCrop.blockName.."." end
+            else b.message="Petak atas tidak dapat digunakan." end
+            s.blockSlots[i]=b
+            if b.state=="blocked" then s.message=b.message .. " Slot " .. i .. "." end
+        end
+        s.nextReadyAt=math.max(adapter.ReadyAt,ctx.punchReady or 0)
+        return s
+    end
+    function adapter.Prepare(kind,i,now)
+        if not app.Alive or not app.Engine or not app.Engine.State.running then adapter.Release() return false,"Farm berhenti." end
+        if farmMode()=="break_only" and (kind=="Plant" or kind=="Harvest") then
+            adapter.Release() return false,"Break Only tidak menanam atau memanen seed.",true
+        end
+        if paused() then adapter.Release() return false,paused() end
+        if not withinFarm() then adapter.Release() return false,"Karakter keluar dari baris farm.",true end
+        if app.Pickup and app.Pickup.State.busy then return false,app.Pickup.State.status end
+        local px,py=position()
+        local destination,tolerance
+        if kind=="Plant" or kind=="Harvest" then
+            local x,y=coords(i,false)
+            if not x or not permitted(x,y,kind=="Plant") then adapter.Release() return false,"Petak tanaman tidak dapat digunakan.",true end
+            destination=x+.5
+            local range=kind=="Plant" and helpers.buildRange() or helpers.punchRange()
+            tolerance=math.min(kind=="Plant" and 1.6 or .75,range-.15)
+        else
+            destination=app.Anchor.x+.5
+            tolerance=.2
+        end
+        if py-(app.Anchor.y+1)>.6 then adapter.Release() return false,"Karakter jatuh dari baris farm.",true end
+        if math.abs(py-(app.Anchor.y+1))>.12 then adapter.Move(0) return false,"Menunggu karakter mendarat di baris farm." end
+        local dx=destination-px
+        if math.abs(dx)<=tolerance then adapter.Release() return true end
+        local targetKey=kind..":"..tostring(i or "center")
+        if not navigation or navigation.target~=targetKey then navigation={target=targetKey,at=now,x=px,started=now}
+        elseif math.abs(px-navigation.x)>.15 then navigation.x,navigation.at=px,now end
+        if now-navigation.at>8 or now-navigation.started>25 then adapter.Release() return false,"Jalur tanam/panen terhalang; periksa baris farm.",true end
+        adapter.TravelBusy=true
+        adapter.Move(dx<0 and -1 or 1)
+        local count=adapter.GetPlantLayout()
+        return false,(kind=="Plant" and "Menuju petak tanam "..i.."/"..count.count.."." or (kind=="Harvest" and "Menuju tanaman matang "..i.."/"..count.count.."." or "Kembali ke tengah untuk farm tiga blok."))
+    end
+    function adapter.RecoveryView()
+        local issue=anchorIssue()
+        if issue then return {ready=false,message=issue,fatal=true,world=ctx.name,job=game.JobId} end
+        local pause=paused()
+        if pause then return {ready=false,message=pause,world=ctx.name,job=game.JobId} end
+        local x,y=position()
+        return {ready=true,world=ctx.name,job=game.JobId,x=x,feetY=y,anchorX=app.Anchor.x+.5,
+            anchorFeetY=app.Anchor.y+1,mode=farmMode(),plantCount=farmMode()=="break_only" and 0 or adapter.GetPlantLayout().count}
+    end
+    local function recoveryBody(x,y,startX,startY)
+        if not inside(x,y) or not permitted(x,y,false) then return false end
+        local id=fg(x,y)
+        local item=items[id]
+        if id==nil or (id~=0 and not item) then return false end
+        if item then
+            if item.hurts or item.deadly or item.bumper or item.laser or item.solid then return false end
+            if (item.door or item.entrance or item.portal) and not (x==startX and y==startY) then return false end
+        end
+        return true
+    end
+    local function recoveryFloor(x,y)
+        local item=items[fg(x,y+1)]
+        return item and (item.solid==true or item.platform==true) and not (item.hurts or item.deadly or item.bumper
+            or item.laser or item.door or item.entrance or item.portal or item.lock) or false
+    end
+    local function recoveryJumpClear(fromX,fromY,toX,toY,startX,startY)
+        if math.abs(toX-fromX)~=1 or fromY-toY<1 or fromY-toY>2 or not recoveryFloor(toX,toY) then return false end
+        -- Native vertical takeoff first; adjacent movement starts only above
+        -- the ledge. One extra clear head cell leaves room for the jump apex.
+        for y=toY-1,fromY do
+            if not recoveryBody(fromX,y,startX,startY) then return false end
+        end
+        return recoveryBody(toX,toY) and recoveryBody(toX,toY-1)
+    end
+    local function recoveryPlan(startX,startY,a)
+        if not recoveryBody(startX,startY,startX,startY) or not recoveryFloor(startX,startY) then return nil end
+        if not recoveryBody(a.x,a.y) or not recoveryFloor(a.x,a.y) then return nil end
+        local queue,cursor,parents={{x=startX,y=startY}},1,{}
+        local startKey=startY*ctx.w+startX
+        parents[startKey]=false
+        local endKey
+        while queue[cursor] and cursor<=8000 do
+            local node=queue[cursor]
+            if node.x==a.x and node.y==a.y then endKey=node.y*ctx.w+node.x break end
+            cursor=cursor+1
+            local first=a.x>=node.x and 1 or -1
+            for _,dir in ipairs({first,-first}) do
+                local x,y=node.x+dir,node.y
+                if recoveryBody(x,y,startX,startY) then
+                    local landing
+                    if recoveryFloor(x,y) then landing=y
+                    elseif fg(x,y+1)==0 or recoveryBody(x,y+1,startX,startY) then
+                        -- Only ordinary drops of up to four tiles. Never
+                        -- break a floor or pass through a solid/hazard.
+                        for below=y+1,math.min(y+4,ctx.h-2) do
+                            if not recoveryBody(x,below,startX,startY) then break end
+                            if recoveryFloor(x,below) then landing=below break end
+                            local support=items[fg(x,below+1)]
+                            if support and (support.solid or support.platform) then break end
+                        end
+                    end
+                    if landing then
+                        local id=landing*ctx.w+x
+                        if parents[id]==nil and id~=startKey then
+                            parents[id]={from=node.y*ctx.w+node.x,x=x,y=landing,fromX=node.x,fromY=node.y}
+                            queue[#queue+1]={x=x,y=landing}
+                        end
+                    end
+                end
+                for rise=1,2 do
+                    local landing=y-rise
+                    local id=landing*ctx.w+x
+                    if parents[id]==nil and id~=startKey and recoveryJumpClear(node.x,y,x,landing,startX,startY) then
+                        parents[id]={from=node.y*ctx.w+node.x,x=x,y=landing,fromX=node.x,fromY=node.y,kind="jump"}
+                        queue[#queue+1]={x=x,y=landing}
+                    end
+                end
+            end
+        end
+        if not endKey then return nil end
+        local reversed,path={},{}
+        while endKey~=startKey do
+            local edge=parents[endKey]
+            if not edge then return nil end
+            reversed[#reversed+1]=edge
+            endKey=edge.from
+        end
+        for i=#reversed,1,-1 do path[#path+1]=reversed[i] end
+        return path
+    end
+    function adapter.ReturnToAnchor(now)
+        local function wait(message,fatal)
+            adapter.RecoveryStatus=message
+            return false,message,fatal
+        end
+        if not app.Alive or app.Recovering~=true or app.WantsRun~=true then
+            adapter.Release() return wait("Perjalanan kembali dihentikan.")
+        end
+        local view=adapter.RecoveryView()
+        if not view.ready then
+            if view.fatal then adapter.Release() else releaseMovement() end
+            return wait(view.message,view.fatal)
+        end
+        if type(now)~="number" or now~=now then now=os.clock() end
+        local a=app.Anchor
+        if recovery and (recovery.anchor~=a or recovery.x~=a.x or recovery.y~=a.y) then
+            adapter.Release() return wait("Titik tujuan berubah; START ulang untuk kembali.",true)
+        end
+        if not recovery then recovery={anchor=a,x=a.x,y=a.y,nextPlan=now} end
+        local state=recovery
+        local x,feet=view.x,view.feetY
+        local grounded=math.abs(feet-math.floor(feet+.5))<=.12
+        local row=math.floor(feet+.5)-1
+        if grounded and row==a.y and math.abs(x-view.anchorX)<=.2 then
+            releaseMovement()
+            if not recoveryBody(a.x,a.y) or not recoveryFloor(a.x,a.y) then
+                return wait("Titik farm belum aman untuk ditempati; menunggu lantai/jalur siap.")
+            end
+            recovery=nil
+            adapter.RecoveryStatus="Sudah kembali ke titik farm tersimpan."
+            return true,adapter.RecoveryStatus
+        end
+        if not state.path then
+            releaseMovement()
+            if not grounded then return wait("Menunggu mendarat untuk kembali ke titik tersimpan.") end
+            if now<state.nextPlan then return wait(state.blocked or "Menunggu jalur kembali tersedia.") end
+            state.nextPlan=now+1
+            local path=recoveryPlan(math.floor(x),row,a)
+            if not path then
+                state.blocked="Jalur kembali belum tersedia: perlu jalan/lantai aman atau undakan yang dapat dilompati normal."
+                return wait(state.blocked)
+            end
+            -- A same-cell start can still need centering inside that cell.
+            if #path==0 then path[1]={x=a.x,y=a.y,fromX=a.x,fromY=a.y} end
+            state.path,state.index=path,1
+            state.startX,state.startY=math.floor(x),row
+            state.progressX,state.progressY,state.progressAt,state.legAt=x,feet,now,now
+        end
+        local edge=state.path[state.index]
+        if edge.kind=="jump" then
+            local jumpKey=edge.fromX..":"..edge.fromY..":"..edge.x..":"..edge.y
+            state.jumpAttempts=state.jumpAttempts or {}
+            local canJump=false
+            if type(app.Session)=="table" and type(app.Session.View)=="function" then
+                local ok,session=pcall(app.Session.View)
+                canJump=ok and type(session)=="table" and session.canSpaceJump==true
+            end
+            if not canJump then
+                releaseMovement()
+                state.jump=nil
+                return wait("Lompat Space belum tersedia pada kontrol native; menunggu pengaturan lompat.")
+            end
+            if app.Recovering~=true or app.WantsRun~=true or anchorIssue() or paused() then
+                adapter.Release() return wait("Perjalanan kembali dihentikan.")
+            end
+            local column=math.floor(x)
+            if not recoveryJumpClear(edge.fromX,edge.fromY,edge.x,edge.y,state.startX,state.startY)
+                or (column~=edge.fromX and column~=edge.x) then
+                releaseMovement()
+                state.jump=nil state.path=nil state.nextPlan=now+1
+                return wait("Ruang lompat berubah; menunggu jalur kembali yang aman.")
+            end
+            if grounded and row==edge.y and column==edge.x and math.abs(x-(edge.x+.5))<=.2 then
+                releaseMovement()
+                state.jumpAttempts[jumpKey]=nil
+                state.jump=nil state.index=state.index+1
+                if not state.path[state.index] then state.path=nil state.nextPlan=now end
+                state.progressX,state.progressY,state.progressAt,state.legAt=x,feet,now,now
+                return wait("Undakan terlewati; melanjutkan jalan ke titik farm.")
+            end
+            if not state.jump then
+                if not grounded or row~=edge.fromY or column~=edge.fromX or not recoveryFloor(edge.fromX,edge.fromY) then
+                    releaseMovement() state.path=nil state.nextPlan=now+1
+                    return wait("Menunggu posisi pijakan siap sebelum lompat normal.")
+                end
+                if (state.jumpAttempts[jumpKey] or 0)>=2 then
+                    releaseMovement()
+                    return wait("Dua percobaan lompat belum berhasil; periksa undakan atau pindah ke jalur aman.")
+                end
+                local offset=edge.fromX+.5-x
+                if math.abs(offset)>.15 then
+                    key(Enum.KeyCode.Space,false)
+                    key(Enum.KeyCode.Left,offset<0) key(Enum.KeyCode.Right,offset>0)
+                    if now-state.legAt>6 then
+                        releaseMovement() state.path=nil state.nextPlan=now+1
+                        return wait("Pijakan lompat terhalang; menunggu jalur aman.")
+                    end
+                    return wait("Menempatkan karakter di tengah pijakan lompat.")
+                end
+                releaseMovement()
+                state.jumpAttempts[jumpKey]=(state.jumpAttempts[jumpKey] or 0)+1
+                state.jump={started=now,releaseAt=now+.2,crossed=false}
+                key(Enum.KeyCode.Space,true)
+                return wait("Melompat normal untuk keluar dari cekungan spawn.")
+            end
+            local jump=state.jump
+            if now>=jump.releaseAt then key(Enum.KeyCode.Space,false) end
+            if now-jump.started>2.5 or (now-jump.started>.45 and grounded and row>=edge.fromY) then
+                releaseMovement()
+                state.jump=nil state.path=nil state.nextPlan=now+1
+                return wait("Lompatan belum mencapai undakan; menunggu sebelum mencoba lagi.")
+            end
+            if feet<=edge.y+1-.05 then jump.crossed=true end
+            if jump.crossed then
+                local dx=edge.x+.5-x
+                key(Enum.KeyCode.Left,dx<-.15) key(Enum.KeyCode.Right,dx>.15)
+                return wait("Melewati bibir undakan setelah ketinggian cukup.")
+            end
+            key(Enum.KeyCode.Left,false) key(Enum.KeyCode.Right,false)
+            return wait("Menunggu lompatan cukup tinggi sebelum bergerak ke undakan.")
+        end
+        local valid=recoveryFloor(edge.x,edge.y)
+        for y=edge.fromY,edge.y do
+            if not recoveryBody(edge.x,y) then valid=false break end
+            local support=items[fg(edge.x,y+1)]
+            if y<edge.y and support and (support.solid or support.platform) then valid=false break end
+        end
+        local column=math.floor(x)
+        if column~=edge.fromX and column~=edge.x then valid=false end
+        if grounded then
+            if not recoveryBody(column,row,state.startX,state.startY) then valid=false end
+            local intentionalDrop=edge.y>edge.fromY and column==edge.x and row>=edge.fromY and row<edge.y
+            if not intentionalDrop and not recoveryFloor(column,row) then valid=false end
+        end
+        if not valid or (grounded and (row<edge.fromY or row>edge.y)) then
+            releaseMovement()
+            state.path=nil state.nextPlan=now+1
+            state.blocked="Jalur berubah; menunggu jalur kembali yang aman."
+            return wait(state.blocked)
+        end
+        local targetX=edge.x+.5
+        if grounded and row==edge.y and math.abs(x-targetX)<=.2 then
+            releaseMovement()
+            state.index=state.index+1
+            if not state.path[state.index] then state.path=nil state.nextPlan=now end
+            state.progressX,state.progressY,state.progressAt,state.legAt=x,feet,now,now
+            return wait("Melanjutkan jalan ke titik farm tersimpan.")
+        end
+        if math.abs(x-state.progressX)>.12 or math.abs(feet-state.progressY)>.12 then
+            state.progressX,state.progressY,state.progressAt=x,feet,now
+        end
+        if now-state.progressAt>4 or now-state.legAt>15 then
+            releaseMovement()
+            state.path=nil state.nextPlan=now+1
+            state.blocked="Perjalanan kembali terhalang; mencoba lagi setelah jalur tersedia."
+            return wait(state.blocked)
+        end
+        if not grounded and edge.y==edge.fromY then
+            releaseMovement() state.path=nil state.nextPlan=now+1
+            return wait("Menunggu mendarat; jalur kembali akan dibaca ulang.")
+        end
+        local dx=targetX-x
+        local direction=math.abs(dx)<=.18 and 0 or (dx<0 and -1 or 1)
+        -- This is the sole movement path allowed outside the farm row. It is
+        -- gated by explicit recovery intent, a fresh native view and safe cells.
+        if app.Recovering~=true or app.WantsRun~=true or anchorIssue() or paused() then
+            adapter.Release() return wait("Perjalanan kembali dihentikan.")
+        end
+        key(Enum.KeyCode.Left,direction<0)
+        key(Enum.KeyCode.Right,direction>0)
+        adapter.TravelBusy=direction~=0
+        return wait(edge.y>edge.fromY and "Turun lewat tepi menuju titik farm tersimpan." or "Berjalan kembali ke titik farm tersimpan.")
+    end
+    local function guard(i,overhead,build)
+        if not app.Alive or not app.Engine or not app.Engine.State.running or paused() or not withinFarm() then return end
+        if farmMode()=="break_only" and breakOnlyLayoutIssue(app.Anchor) then return end
+        if overhead and not atAnchor() then return end
+        if app.Pickup and app.Pickup.State.busy then return end
+        local x,y=coords(i,overhead)
+        if not x or not permitted(x,y,build) or not inRange(x,y,build) then return end
+        local ready=math.max(adapter.ReadyAt,ctx.punchReady or 0)
+        if os.clock() < ready then return nil,nil,ready end
+        return x,y
+    end
+    local function recorded(kind,i)
+        adapter.Recent[#adapter.Recent+1]={kind=kind,slot=i,t=os.clock()}
+        if #adapter.Recent>120 then table.remove(adapter.Recent,1) end
+    end
+    function adapter.Plant(i)
+        if farmMode()~="farm" then return false end
+        local x,y,ready=guard(i,false,true)
+        if not x then return false,ready end
+        local tr=trees()
+        if fg(x,y)~=0 or type(tr)~="table" or tr[y*ctx.w+x] or inventory:count(seedId)<1 or not canPlace(items[seedId],x,y) then return false end
+        plantSeed(seedId,x,y)
+        adapter.ReadyAt=os.clock()+.15
+        local sent=fg(x,y)==seedId
+        if sent then recorded("plant",i) end
+        return sent,adapter.ReadyAt
+    end
+    function adapter.Place(i)
+        local x,y,ready=guard(i,true,true)
+        if not x then return false,ready end
+        local tr=trees()
+        if fg(x,y)~=0 or type(tr)~="table" or tr[y*ctx.w+x] or inventory:count(blockId)<1 or not canPlace(items[blockId],x,y) then return false end
+        setTile("fg",x,y,blockId,false,false)
+        inventory:remove(blockId,1)
+        adapter.ReadyAt=os.clock()+.15
+        local sent=fg(x,y)==blockId
+        if sent then recorded("place",i) end
+        return sent,adapter.ReadyAt
+    end
+    local function punch(i,overhead)
+        local x,y,ready=guard(i,overhead,false)
+        if not x then return false,ready end
+        local id=overhead and blockId or seedId
+        if fg(x,y)~=id then return false end
+        local tr=trees()
+        if type(tr)~="table" then return false end
+        if overhead then if tr[y*ctx.w+x] then return false end
+        else local t=tr[y*ctx.w+x] if not t or type(t.p)~="number" or not treeRipe(seedId,t) then return false end end
+        local placed=ctx.placedAt and ctx.placedAt.fg and ctx.placedAt.fg[y*ctx.w+x]
+        if placed and os.clock()<placed+.3 then return false,placed+.3 end
+        local baseline,started
+        if overhead then
+            baseline={} started=os.clock()
+            for _,d in pairs(ctx.dropList()) do if type(d)=="table" and d.uid~=nil then baseline[d.uid]=true end end
+        end
+        hit(x,y)
+        if overhead and fg(x,y)==0 then beginBlockBreak(x,y,started,baseline) end
+        ctx.punchReady=os.clock()+.22
+        adapter.ReadyAt=ctx.punchReady
+        local sent=overhead or fg(x,y)==0
+        if sent then recorded(overhead and "punch" or "harvest",i) end
+        return sent,adapter.ReadyAt
+    end
+    function adapter.PunchBlock(i) return punch(i,true) end
+    function adapter.Harvest(i) if farmMode()~="farm" then return false end return punch(i,false) end
+    local collecting,nextCollect=false,0
+    function adapter.Collect(now)
+        if collecting or now<nextCollect or not app.Alive or not app.Engine or not app.Engine.State.running
+            or paused() or not withinFarm() then return end
+        refreshBlockProvenance(now)
+        if next(blockClaims)==nil then return end
+        nextCollect=now+.15
+        local setCount=debug.getupvalues(ctx.dropTaken)[3]
+        if type(setCount)~="function" or debug.info(setCount,"n")~="setDropCount"
+            or debug.getupvalues(setCount)[1]~=ctx.dropList() then return end
+        local collectWorld, collectJob, collectAnchor,collectEpoch = ctx.name, game.JobId, app.Anchor,provenanceEpoch
+        local function currentCollection()
+            return ctx.name==collectWorld and game.JobId==collectJob and app.World==collectWorld
+                and app.Anchor==collectAnchor and provenanceEpoch==collectEpoch and not paused() and withinFarm()
+        end
+        collecting=true
+        task.spawn(function()
+            local ok,err=pcall(function()
+                if not app.Alive or not app.Engine or not app.Engine.State.running or not currentCollection() then return end
+                local candidates={}
+                local px,py=position()
+                for _,d in pairs(ctx.dropList()) do
+                    if type(d)=="table" and pickupEligible(d,os.clock()) and not d.taking and d.n>0
+                        and (d.id==112 or inventory:room(d.id)>0)
+                        and (retryAt[d.uid] or 0)<=os.clock() and dropInFarmScope(d,app.Anchor)
+                        and directPickupRange(d,px,py) then candidates[#candidates+1]=d end
+                end
+                table.sort(candidates,function(a,b) return a.uid<b.uid end)
+                for index,d in ipairs(candidates) do
+                    if index>5 or not app.Alive or not app.Engine or not app.Engine.State.running or not currentCollection() then break end
+                    refreshBlockProvenance(os.clock())
+                    local px,py=position()
+                    if pickupEligible(d,os.clock()) and directPickupRange(d,px,py)
+                        and not d.taking and table.find(ctx.dropList(),d) and d.n>0 then
+                        local want=d.id==112 and d.n or math.min(d.n,inventory:room(d.id))
+                        retryAt[d.uid]=os.clock()+1
+                        if want>0 then
+                            local requestedId=d.id
+                            local requestedClaim=blockClaims[d.uid]
+                            d.taking=true
+                            adapter.LastPickupOutcome={uid=d.uid,id=requestedId,requested=want,kind="pending",at=os.clock(),world=collectWorld,job=collectJob}
+                            local received,got=pcall(ctx.takeDrop,d.uid,want)
+                            d.taking=false
+                            local sameClaim=provenanceEpoch==collectEpoch and blockClaims[d.uid]==requestedClaim
+                                and requestedClaim.object==d and requestedClaim.id==d.id and table.find(ctx.dropList(),d)
+                            local outcome={uid=d.uid,id=requestedId,requested=want,at=os.clock(),world=collectWorld,job=collectJob,stale=not sameClaim}
+                            if received and type(got)=="number" and got>0 then outcome.kind,outcome.amount="confirmed",got
+                            elseif not received then outcome.kind,outcome.detail="error",tostring(got):sub(1,120)
+                            elseif type(got)~="number" then outcome.kind,outcome.detail="non_numeric",tostring(got):sub(1,120)
+                            elseif got==0 then outcome.kind,outcome.detail="zero","0"
+                            elseif got<0 then outcome.kind,outcome.detail="negative",tostring(got)
+                            else outcome.kind,outcome.detail="invalid_number",tostring(got) end
+                            adapter.LastPickupOutcome=outcome
+                            if received and type(got)=="number" and got>0 then
+                                if ctx.name~=collectWorld or game.JobId~=collectJob or app.World~=collectWorld then
+                                    outcome.bookkeepingSkipped=true
+                                    adapter.LastCollect="Pickup world sebelumnya selesai; menunggu data tas world saat ini."
+                                    break
+                                end
+                                -- Match native bookkeeping only after the server confirms pickup.
+                                if requestedId==112 then helpers.addGems(got) else inventory:add(requestedId,got) end
+                                if table.find(ctx.dropList(),d) and d.id==requestedId then setCount(d,d.n-got) end
+                                adapter.Collected=adapter.Collected+got
+                                local counter=requestedId==112 and "CollectedGems" or (requestedId==seedId and "CollectedSeeds" or "CollectedBlocks")
+                                adapter[counter]=adapter[counter]+got
+                                if sameClaim then
+                                    failedPickup[d.uid]=nil
+                                    retryAt[d.uid]=os.clock()+1
+                                    requestedClaim.failureCount,requestedClaim.deferredUntil=0,nil
+                                    requestedClaim.blockingExhausted,requestedClaim.deferReason=nil,nil
+                                end
+                                adapter.LastCollect="Item masuk tas: "..got
+                            elseif sameClaim then
+                                retryAt[d.uid]=os.clock()+2
+                                requestedClaim.failureCount=(requestedClaim.failureCount or 0)+1
+                                failedPickup[d.uid]=requestedClaim.failureCount
+                                outcome.failures=requestedClaim.failureCount
+                                adapter.LastCollect=(outcome.kind=="error" and "Permintaan pickup error: " or "Respons pickup: ")..outcome.detail.."; belum ada item dikonfirmasi."
+                                if requestedClaim.failureCount>=PICKUP_FAILURE_LIMIT or requestedClaim.blockingExhausted then
+                                    deferBlockPickup(d,os.clock(),"unconfirmed")
+                                    adapter.LastPickupOutcome.deferredUntil=requestedClaim.deferredUntil
+                                    adapter.LastCollect=adapter.LastCollect.." Coba lagi dalam 15 detik; farm lanjut."
+                                end
+                            end
+                        end
+                    end
+                end
+                local live={}
+                for _,d in pairs(ctx.dropList()) do if type(d)=="table" then live[d.uid]=true end end
+                for uid in pairs(retryAt) do if not live[uid] then retryAt[uid]=nil failedPickup[uid]=nil end end
+            end)
+            collecting=false
+            if not ok then adapter.LastCollect="Pickup tertunda: "..tostring(err):sub(1,90) end
+        end)
+    end
+    function adapter.CleanupBlockDrops(now)
+        local function waiting(message)
+            adapter.LastBlockCleanup=message
+            return false,message
+        end
+        if not app.Alive then adapter.Release() return waiting("Farm sudah ditutup.") end
+        local issue=anchorIssue()
+        if issue then
+            adapter.Release()
+            return false,issue,true
+        end
+        if not app.Engine or not app.Engine.State.running then adapter.Release() return waiting("Pembersihan drop berhenti.") end
+        local pause=paused()
+        if pause then releaseMovement() return waiting(pause) end
+        if type(now)~="number" or now~=now then now=os.clock() end
+        local a=app.Anchor
+        if blockCleanup and (blockCleanup.anchor~=a or blockCleanup.world~=ctx.name or blockCleanup.job~=game.JobId
+            or blockCleanup.x~=a.x or blockCleanup.y~=a.y or blockCleanup.seedId~=seedId) then
+            adapter.Release()
+            return false,"Titik/pasangan farm berubah saat membersihkan drop; START ulang.",true
+        end
+        if not blockCleanup or blockCleanup.done then
+            blockCleanup={anchor=a,world=ctx.name,job=game.JobId,x=a.x,y=a.y,seedId=seedId,started=now}
+        end
+        local cleanup=blockCleanup
+        local drops,available,full,deferred=centralDrops()
+        cleanup.remaining,cleanup.available,cleanup.full,cleanup.deferred=#drops,available,full,deferred
+        if #drops==0 then
+            releaseMovement()
+            local newest
+            for _,window in ipairs(breakWindows) do newest=math.max(newest or window.started,window.started) end
+            if newest and now-newest<.2 then return waiting("Menunggu hasil blok yang baru dipecahkan...") end
+            -- Cleanup can finish without drops yet. Keep the original bounded
+            -- birth windows alive for delayed native drops; they expire in refresh.
+            cleanup.done=true
+            adapter.LastBlockCleanup="Drop blok tengah sudah bersih."
+            return true,adapter.LastBlockCleanup
+        end
+        cleanup.emptySince=nil
+        if available==0 then
+            releaseMovement()
+            cleanup.done=true
+            if deferred>0 then
+                -- Exhausted UIDs retry only when normally reachable. They never
+                -- regain ownership of movement or block another farm batch.
+                adapter.Collect(now)
+                adapter.LastBlockCleanup="Pickup ditunda: "..deferred.." tumpukan tetap ada; farm lanjut."
+                if full>0 then adapter.LastBlockCleanup=adapter.LastBlockCleanup.." Tas penuh: "..full.." tumpukan." end
+            else adapter.LastBlockCleanup="Tas penuh: "..full.." tumpukan drop tengah ditinggal sementara; farm lanjut memakai stok." end
+            return true,adapter.LastBlockCleanup
+        end
+        if now-cleanup.started>=CLEANUP_BLOCK_SECONDS then
+            for _,d in ipairs(drops) do
+                if not blockClaims[d.uid].blockingExhausted and (d.id==112 or inventory:room(d.id)>0) then
+                    deferBlockPickup(d,now,"cleanup_timeout")
+                end
+            end
+            releaseMovement()
+            cleanup.done=true
+            adapter.LastBlockCleanup="Batas tunggu pickup tercapai; drop tetap ada, coba lagi nanti. Farm lanjut."
+            return true,adapter.LastBlockCleanup
+        end
+        if now-cleanup.started<.2 then releaseMovement() return waiting("Menunggu drop blok tengah muncul...") end
+        local px,py=position()
+        local center=a.x+.5
+        if math.abs(px-center)>2.25 then releaseMovement() return waiting("Kembali ke tengah sebelum mengambil drop blok.") end
+        if math.abs(py-(a.y+1))>.12 then releaseMovement() return waiting("Menunggu mendarat sebelum mengambil drop blok.") end
+        if collecting then releaseMovement() return waiting("Menunggu hasil pengambilan drop blok tengah.") end
+        local target,distance
+        for _,d in ipairs(drops) do
+            if not blockClaims[d.uid].blockingExhausted and not d.taking and not d.pending and (d.id==112 or inventory:room(d.id)>0) then
+                local score=math.abs(d.x-px)+math.abs(d.y-(py-.475))
+                if d.uid==cleanup.targetUid then target=d break end
+                if not distance or score<distance then target,distance=d,score end
+            end
+        end
+        if not target then releaseMovement() return waiting("Menunggu drop tengah siap diambil.") end
+        if target.uid~=cleanup.targetUid then
+            cleanup.targetUid=target.uid
+            cleanup.routeStarted,cleanup.progressAt,cleanup.progressX=now,now,px
+            cleanup.direction,cleanup.turns,cleanup.blocked=nil,0,nil
+        end
+        local destination=math.clamp(target.x,center-1.9,center+1.9)
+        local dx=destination-px
+        local direct=directPickupRange(target,px,py)
+        if direct and ((failedPickup[target.uid] or 0)==0 or math.abs(dx)<=.2) then
+            releaseMovement()
+            adapter.Collect(now)
+            return waiting("Mengambil drop blok tengah; menunggu konfirmasi masuk tas.")
+        end
+        -- Keep rejected/out-of-range items real. Walking can improve horizontal
+        -- reach, but this routine never jumps, teleports, discards or fakes a receipt.
+        if math.abs(target.y-(py-.475))>1.3 then
+            releaseMovement()
+            return waiting("Drop tengah belum terjangkau vertikal; menunggu turun tanpa melompat.")
+        end
+        if cleanup.blocked then
+            local b=cleanup.blocked
+            if math.abs(px-b.x)>.2 or math.abs(target.x-b.targetX)>.2 or math.abs(target.y-b.targetY)>.2 then
+                cleanup.blocked=nil
+                cleanup.routeStarted,cleanup.progressAt,cleanup.progressX=now,now,px
+                cleanup.direction,cleanup.turns=nil,0
+            else releaseMovement() return waiting("Jalur drop tengah terhalang; menunggu jalan terbuka atau posisi berubah.") end
+        end
+        if math.abs(dx)<=.2 then
+            releaseMovement()
+            return waiting("Drop tengah belum diterima; menunggu jangkauan/konfirmasi native.")
+        end
+        for x=math.min(math.floor(px),math.floor(destination)),math.max(math.floor(px),math.floor(destination)) do
+            local support=items[fg(x,a.y+1)]
+            if not permitted(x,a.y,false) or not support or (support.solid~=true and support.platform~=true)
+                or support.hurts or support.deadly then
+                releaseMovement()
+                return waiting("Jalur drop tengah belum aman/diizinkan; farm menunggu.")
+            end
+        end
+        if math.abs(px-cleanup.progressX)>.15 then cleanup.progressAt,cleanup.progressX=now,px end
+        local direction=dx<0 and -1 or 1
+        if cleanup.direction and cleanup.direction~=direction then cleanup.turns=cleanup.turns+1 end
+        if now-cleanup.progressAt>4 or now-cleanup.routeStarted>10 or cleanup.turns>=3 then
+            cleanup.blocked={x=px,targetX=target.x,targetY=target.y}
+            releaseMovement()
+            return waiting("Jalur drop tengah terhalang; menunggu jalan terbuka atau posisi berubah.")
+        end
+        cleanup.direction=direction
+        adapter.Move(direction)
+        adapter.TravelBusy=true
+        return waiting("Mendekati drop blok tengah dengan jalan biasa.")
+    end
+    function adapter.SetCrop(id)
+        if not app.Alive then return false,"UI farm sudah ditutup." end
+        if app.Engine and app.Engine.State.running then return false,"STOP farm sebelum mengganti seed dan block." end
+        if collecting then return false,"Tunggu pengambilan item selesai sebelum mengganti pasangan." end
+        if type(id)~="number" or id%1~=0 or not cropBySeed[id] then return false,"Pasangan seed/block ini tidak didukung." end
+        clearBlockProvenance()
+        adapter.Release()
+        selectedCrop=cropBySeed[id]
+        seedId,blockId=selectedCrop.seedId,selectedCrop.blockId
+        adapter.ReadyAt,adapter.Recent,adapter.Collected=0,{},0
+        adapter.CollectedBlocks,adapter.CollectedSeeds,adapter.CollectedGems=0,0,0
+        adapter.LastCollect=nil
+        adapter.LastPickupOutcome=nil
+        failedPickup,retryAt,nextCollect={},{},0
+        return true,adapter.GetCrop()
+    end
+    return adapter
+end
+
+end)()
+
+local makeWorldSession = (function()
+-- Use the game's own world picker entry flow, including its loading flag and HUD.
+return function(player, app)
+    local native, menu, picker, worldMenu
+    local nextDiscovery,nextModule=0,0
+    local api={}
+    local function loadJumpModule()
+        if worldMenu or os.clock()<nextModule then return end
+        nextModule=os.clock()+2
+        local pg=player:FindFirstChildOfClass("PlayerGui")
+        local gameGui=pg and pg:FindFirstChild("GameGui")
+        local script=gameGui and gameGui:FindFirstChild("WorldMenu")
+        if script then local loaded,value=pcall(require,script) if loaded then worldMenu=value end end
+    end
+    local function discover()
+        if native and menu and picker and picker.Parent then return true end
+        if os.clock()<nextDiscovery then return false end
+        nextDiscovery=os.clock()+2
+        native,menu,picker,worldMenu=nil,nil,nil,nil
+        local pg=player:FindFirstChildOfClass("PlayerGui")
+        for _,v in pairs(getgc(true)) do
+            if type(v)=="table" and type(rawget(v,"openPicker"))=="function"
+                and type(rawget(v,"enter"))=="function" then
+                local ok,u=pcall(debug.getupvalues,v.openPicker)
+                local h,p=ok and u[1],ok and u[2]
+                if type(h)=="table" and type(h.currentWorld)=="function" and type(h.enter)=="function"
+                    and typeof(p)=="Instance" and p:IsA("GuiObject") and pg and p:IsDescendantOf(pg) then
+                    native,menu,picker=h,v,p
+                    loadJumpModule()
+                    return true
+                end
+            end
+        end
+        return false
+    end
+    function api.View()
+        if not discover() then return {ready=false,message="Menunggu menu world siap."} end
+        local ok,world=pcall(native.currentWorld)
+        if not ok or type(world)~="string" then return {ready=false,message="Menunggu data world."} end
+        local busy=false
+        local got,u=pcall(debug.getupvalues,menu.enter)
+        if got then busy=u[1]==true end
+        local canSpaceJump=false
+        loadJumpModule()
+        if worldMenu and type(worldMenu.spaceJumps)=="function" and type(native.settings)=="table" then
+            local checked,value=pcall(worldMenu.spaceJumps,native.settings)
+            canSpaceJump=checked and value==true
+        end
+        return {ready=true,world=world,picker=picker.Visible==true,loading=busy,
+            typing=game:GetService("UserInputService"):GetFocusedTextBox()~=nil,canSpaceJump=canSpaceJump}
+    end
+    function api.Enter(world)
+        local view=api.View()
+        if not app.Alive or not app.WantsRun or not app.Recovering then return false,"Pemulihan dibatalkan." end
+        if type(world)~="string" or #world<1 or #world>24 or not world:match("^[A-Z0-9]+$") then
+            return false,"Nama world tersimpan tidak valid."
+        end
+        if not view.ready or not view.picker or view.loading or view.typing then return false,"Menunggu menu world siap." end
+        -- The observed native WorldMenu.enter(worldName) calls handlers.enter,
+        -- closes the picker only on success, and restores the game's own HUD.
+        menu.enter(world)
+        return true
+    end
+    return api
+end
+
+end)()
+
+if game.PlaceId ~= 112863874972771 then warn("[Block Farm] Buka Growblox dahulu.") return end
+local env=type(getgenv)=="function" and getgenv() or _G
+local old=env.BlueHubGrassFarm
+local savedAnchor=type(old)=="table" and old.Alive and old.Anchor or nil
+local savedSeedId=type(old)=="table" and old.Crop and old.Crop.seedId or nil
+local savedMode=type(old)=="table" and (old.Mode or "farm") or nil
+local savedPlantCount=type(old)=="table" and old.PlantCount or nil
+local savedRun=type(old)=="table" and old.LastRun or nil
+local savedWantsRun=type(old)=="table" and old.Alive and (old.WantsRun==true
+    or old.WantsRun==nil and old.Engine and old.Engine.State.running==true) or false
+local savedProgress=type(old)=="table" and old.Engine and type(old.Engine.ExportProgress)=="function" and old.Engine.ExportProgress() or nil
+if type(old)=="table" and type(old.Close)=="function" then old.Close() end
+local app={Alive=true,Version="1.8.3-late-drop-pickup",Mode="farm",PlantCount=21,WantsRun=false,Recovering=false,
+    PassivePickup=true,AllowedWorlds={AAXYOU=true,BLOMM=true},NeedsCapture=false}
+env.BlueHubGrassFarm=app
+local ui,adapter,engine,pickup,heartbeat,bindCurrentWorld,session
+local recoveryToken,joinPending,nextJoin,joinAttempts,recoveryBound,arrivalAt,nextBind=0,false,0,0,false,nil,0
+local beginRecovery,recoverStep
+local function copy(value)
+    if type(value)~="table" then return value end
+    local result={} for k,v in pairs(value) do result[k]=copy(v) end return result
+end
+local function worldChanged()
+    return adapter and (app.World~=adapter.Context.name or app.Job~=game.JobId)
+end
+local settingsFile="BLUE_HUB_FARM_SELECTION.json"
+local function validMode(value) return value=="farm" or value=="break_only" end
+local function validPlantCount(n) return type(n)=="number" and n==n and n%1==0 and n>=1 and n<=99 end
+local function readSelection()
+    if type(readfile)~="function" then return {} end
+    local ok,value=pcall(function()
+        local settings=game:GetService("HttpService"):JSONDecode(readfile(settingsFile))
+        return type(settings)=="table" and settings or {}
+    end)
+    return ok and value or {}
+end
+local function saveSeedChoice(seedId)
+    if type(writefile)~="function" then return false end
+    return pcall(function()
+        writefile(settingsFile,game:GetService("HttpService"):JSONEncode({seedId=seedId,mode=app.Mode,plantCount=app.PlantCount}))
+    end)
+end
+local function resetEngine(progress)
+    if engine then engine.Close() end
+    engine=makeFarmEngine(adapter,{world=app.World,mode=app.Mode,resume=progress})
+    app.Engine=engine
+    engine.State.seedCount=app.Mode=="break_only" and 0 or app.PlantCount
+    engine.State.blockCount=adapter.BlockCount
+end
+function app.SetPlantCount(n)
+    if not app.Alive or not adapter then return false end
+    if app.WantsRun or engine and engine.State.running then ui.SetStatus("Tekan STOP sebelum mengubah jumlah tanaman.") return false end
+    if not validPlantCount(n) then ui.SetStatus("Jumlah tanaman harus bilangan bulat 1–99.") return false end
+    if n==app.PlantCount then return true end
+    if pickup then pickup.Cancel() end
+    adapter.Release()
+    app.PlantCount=n app.Anchor=nil app.LastRun=nil app.NeedsCapture=true
+    resetEngine()
+    ui.SetPlantCount(n) ui.SetAnchor(nil) ui.SetRunning(false)
+    saveSeedChoice(app.Crop.seedId)
+    engine.State.status="Jumlah tanaman: "..n..". Berdiri di tengah baris lalu SET TITIK."
+    ui.SetStatus(engine.State.status) ui.SetStats(engine.State)
+    return true
+end
+function app.SelectMode(mode)
+    if not app.Alive or not adapter or not validMode(mode) then return false end
+    if worldChanged() then bindCurrentWorld(true) end
+    if app.WantsRun or engine and engine.State.running then
+        ui.SetStatus("Tekan STOP sebelum mengganti mode.") return false
+    end
+    if mode==app.Mode then return true end
+    if pickup then pickup.Cancel() end
+    adapter.Release()
+    app.Mode=mode
+    app.Anchor=nil
+    app.LastRun=nil
+    app.NeedsCapture=true
+    resetEngine()
+    ui.SetMode(mode)
+    ui.SetAnchor(nil)
+    ui.SetRunning(false)
+    local saved=saveSeedChoice(app.Crop.seedId)
+    engine.State.status=(mode=="break_only" and "BREAK ONLY: pasang → pecahkan → ambil drop. " or "FARM + TANAM: tanam, farm blok, lalu panen. ")
+        .."Berdiri di tengah lalu SET TITIK."
+    if not saved then engine.State.status=engine.State.status.." Pilihan tersimpan untuk sesi ini." end
+    engine.State.seeds,engine.State.blocks=adapter.Inventory()
+    ui.SetStats(engine.State)
+    ui.SetStatus(engine.State.status)
+    return true
+end
+function app.RefreshCrops()
+    if not app.Alive or not adapter then return end
+    local crops=adapter.ListCrops()
+    ui.SetCrops(crops,app.Crop.seedId)
+    return crops
+end
+function app.SelectCrop(seedId)
+    if not app.Alive or not adapter then return false end
+    if worldChanged() then bindCurrentWorld(true) end
+    if app.WantsRun or engine and engine.State.running then
+        ui.SetStatus("Tekan STOP sebelum mengganti seed / block.")
+        return false
+    end
+    local selected,crop=adapter.SetCrop(seedId)
+    if not selected then
+        if engine then engine.State.status=tostring(crop) end
+        ui.SetStatus(crop)
+        return false
+    end
+    resetEngine()
+    app.Crop=crop
+    app.LastRun=nil
+    ui.SetCrop(crop)
+    ui.SetRunning(false)
+    app.RefreshCrops()
+    local saved=saveSeedChoice(crop.seedId)
+    engine.State.status=app.Mode=="break_only" and ("Dipilih: "..crop.blockName.." untuk tiga petak atas. Seed tidak ditanam.")
+        or ("Dipilih: "..crop.seedName.." + "..crop.blockName..". Gunakan baris kosong atau berisi jenis yang sama.")
+    if not saved then engine.State.status=engine.State.status.." Pilihan tersimpan untuk sesi ini." end
+    engine.State.seeds,engine.State.blocks=adapter.Inventory()
+    ui.SetStats(engine.State)
+    ui.SetStatus(engine.State.status)
+    return true
+end
+function app.Stop()
+    app.WantsRun=false app.Recovering=false
+    recoveryToken=recoveryToken+1 joinPending=false recoveryBound=false arrivalAt=nil
+    if engine then engine.Stop() end
+    if pickup then pickup.Cancel() end
+    if adapter then adapter.Release() end
+    if ui then ui.SetRunning(false) end
+end
+function app.Close()
+    if not app.Alive then return end
+    app.Stop()
+    app.Alive=false
+    if heartbeat then heartbeat:Disconnect() heartbeat=nil end
+    if engine then engine.Close() end
+    if pickup then pickup.Cancel() end
+    if ui then ui.Destroy() end
+    if env.BlueHubGrassFarm==app then env.BlueHubGrassFarm=nil end
+end
+function app.Capture()
+    if not app.Alive or not adapter then return false end
+    if worldChanged() then bindCurrentWorld(true) end
+    if app.WantsRun or engine and engine.State.running then return false end
+    app.LastRun=nil
+    local a,message=adapter.Capture()
+    app.Anchor=a
+    ui.SetAnchor(a)
+    if not a then
+        if engine then engine.State.status=tostring(message) end
+        ui.SetStatus(message) return false
+    end
+    app.NeedsCapture=false
+    local s=adapter.Snapshot()
+    local status=s.message or (app.Mode=="break_only" and "Titik siap. START untuk pasang, pecahkan dan ambil drop tiga blok; tanpa tanam seed."
+        or "Titik siap. START untuk "..app.PlantCount.." tanaman dan tiga blok atas.")
+    if engine then engine.State.status=status end
+    ui.SetStatus(status)
+    return true
+end
+function app.Start()
+    if not app.Alive or not engine or not adapter then return end
+    if session then
+        local v=session.View()
+        if v.ready and v.picker and app.LastRun then
+            app.WantsRun=true beginRecovery(os.clock()) return
+        elseif not v.ready or v.picker or v.world=="" then
+            ui.SetStatus("Masuk world dan SET TITIK sebelum START pertama.") return
+        end
+    end
+    if worldChanged() then bindCurrentWorld(true) return end
+    if app.NeedsCapture then
+        engine.State.status="Titik farm perlu disimpan. Berdiri di tengah lalu SET TITIK dahulu."
+        ui.SetStatus(engine.State.status) return
+    end
+    if not app.Anchor and not app.Capture() then return end
+    local clear=env.BlueHubGrowbloxClear
+    if type(clear)=="table" and type(clear.Stop)=="function" then clear.Stop() end
+    if pickup then pickup.Cancel() end
+    engine.Start()
+    app.WantsRun=engine.State.running==true
+    if app.WantsRun then
+        app.LastRun={world=app.World,anchor=copy(app.Anchor),seedId=app.Crop.seedId,mode=app.Mode,
+            plantCount=app.PlantCount,progress=engine.ExportProgress()}
+    end
+    ui.SetRunning(engine.State.running)
+    ui.SetStatus(engine.State.status)
+end
+bindCurrentWorld=function(requireCapture)
+    app.Stop()
+    app.Anchor=nil
+    app.NeedsCapture=requireCapture==true
+    if app.Job and app.Job~=game.JobId then
+        local seedId=app.Crop and app.Crop.seedId
+        adapter=makeAdapter(game.Players.LocalPlayer,app)
+        app.Adapter=adapter
+        if seedId then adapter.SetCrop(seedId) end
+        pickup=makePickupDriver({View=adapter.PickupView,Move=adapter.Move,Jump=adapter.Jump,Release=adapter.Release},{radius=10})
+        app.Pickup=pickup
+    end
+    local world=adapter.Context.name
+    assert(type(world)=="string" and world~="", "Masuk world dahulu.")
+    app.World,app.Job=world,game.JobId
+    app.Crop=adapter.GetCrop()
+    resetEngine()
+    ui.SetAnchor(nil) ui.SetCrop(app.Crop) ui.SetMode(app.Mode) ui.SetPlantCount(app.PlantCount) ui.SetRunning(false)
+    app.RefreshCrops()
+    engine.State.status="World berubah ke "..world..". Berdiri di titik farm lalu SET TITIK."
+    ui.SetStatus(engine.State.status)
+end
+ui=makeUI({onStart=app.Start,onStop=app.Stop,onCapture=app.Capture,onClose=app.Close,
+    onSelectCrop=app.SelectCrop,onRefreshCrops=app.RefreshCrops,onSelectMode=app.SelectMode,onSetPlantCount=app.SetPlantCount})
+app.UI=ui
+local function recoveryStatus(text)
+    if engine then engine.State.status=text end
+    ui.SetStatus(text) ui.SetRunning(app.WantsRun)
+end
+beginRecovery=function(now)
+    if app.Recovering then return end
+    local plan=app.LastRun
+    if not plan or not plan.anchor then app.Stop() return end
+    if engine then
+        plan.progress=engine.ExportProgress() or plan.progress
+        engine.Stop()
+    end
+    if pickup then pickup.Cancel() end
+    if adapter then adapter.Release() end
+    app.Recovering=true
+    recoveryToken=recoveryToken+1 joinPending=false recoveryBound=false arrivalAt=nil
+    nextJoin=now+1 joinAttempts=0 nextBind=0
+    recoveryStatus("Kembali ke world "..plan.world..", lalu titik farm tersimpan.")
+end
+recoverStep=function(now,view)
+    if not app.WantsRun or not app.LastRun then return false end
+    if view.picker or not view.ready or view.world=="" then
+        beginRecovery(now)
+        recoveryBound=false arrivalAt=nil
+        if adapter then adapter.Release() end
+        if not view.ready or view.loading or view.typing then
+            recoveryStatus(view.typing and "Pemulihan dijeda saat mengetik." or "Menunggu world siap untuk masuk kembali.")
+        elseif joinPending then recoveryStatus("Sedang masuk kembali ke "..app.LastRun.world.."...")
+        elseif now<nextJoin then recoveryStatus("Masuk kembali ke "..app.LastRun.world.." dalam "..math.ceil(nextJoin-now).." detik.")
+        else
+            local token,target=recoveryToken,app.LastRun.world
+            joinPending=true joinAttempts=joinAttempts+1
+            recoveryStatus("Masuk kembali ke "..target.."...")
+            task.spawn(function()
+                if not app.Alive or not app.WantsRun or token~=recoveryToken then return end
+                local ok,entered,message=pcall(session.Enter,target)
+                if not app.Alive or not app.WantsRun or token~=recoveryToken then return end
+                joinPending=false
+                nextJoin=os.clock()+math.min(30,5*2^math.min(joinAttempts-1,3))
+                if not ok or entered==false then
+                    recoveryStatus("Belum bisa masuk "..target..": "..tostring(ok and message or entered):sub(1,110).."; mencoba lagi.")
+                end
+            end)
+        end
+        return true
+    end
+    if not app.Recovering then return false end
+    local plan=app.LastRun
+    if view.world~=plan.world then
+        app.Stop()
+        bindCurrentWorld(true)
+        recoveryStatus("World berbeda dipilih. SET TITIK untuk memulai di world ini.")
+        return true
+    end
+    if not recoveryBound then
+        if now<nextBind then return true end
+        nextBind=now+1
+        local unauthorized=false
+        local ok,why=pcall(function()
+            if engine then engine.Close() end
+            if adapter then adapter.Release() end
+            app.Mode,app.PlantCount=plan.mode,plan.plantCount
+            adapter=makeAdapter(game.Players.LocalPlayer,app) app.Adapter=adapter
+            assert(adapter.Context.name==plan.world,"Data world belum sesuai.")
+            app.World,app.Job=plan.world,game.JobId
+            assert(type(adapter.Context.lock)=="table" and adapter.Context.lock.owner~=nil,"Menunggu data world lock.")
+            if not adapter.IsWorldAuthorized() then unauthorized=true error("Akses world berubah.") end
+            local selected,message=adapter.SetCrop(plan.seedId) assert(selected,message)
+            app.Crop=adapter.GetCrop()
+            app.Anchor=copy(plan.anchor) app.Anchor.job=game.JobId
+            app.NeedsCapture=false
+            resetEngine(plan.progress)
+            pickup=makePickupDriver({View=adapter.PickupView,Move=adapter.Move,Jump=adapter.Jump,Release=adapter.Release},{radius=10})
+            app.Pickup=pickup
+            ui.SetAnchor(app.Anchor) ui.SetMode(app.Mode) ui.SetPlantCount(app.PlantCount) ui.SetCrop(app.Crop)
+            recoveryBound=true
+        end)
+        if not ok then
+            if adapter then adapter.Release() end
+            if unauthorized then app.Stop() recoveryStatus("Akses world berubah; pemulihan dihentikan.") return true end
+            recoveryStatus("Menunggu data / izin world: "..tostring(why):sub(1,130))
+            return true
+        end
+    end
+    local ok,arrived,message,fatal=pcall(adapter.ReturnToAnchor,now)
+    if not ok then
+        adapter.Release() arrivalAt=nil
+        recoveryStatus("Menunggu jalur kembali: "..tostring(arrived):sub(1,130))
+    elseif fatal then
+        app.Stop() recoveryStatus(tostring(message or "Titik / izin farm berubah; SET TITIK ulang."))
+    elseif arrived then
+        arrivalAt=arrivalAt or now
+        recoveryStatus("Sudah di titik farm. Menunggu posisi stabil...")
+        if now-arrivalAt>=.4 then
+            adapter.Release()
+            engine.Start()
+            app.Recovering=false
+            app.WantsRun=engine.State.running==true
+            recoveryStatus(engine.State.status)
+        end
+    else
+        arrivalAt=nil
+        recoveryStatus(message or "Berjalan kembali ke titik farm tersimpan...")
+    end
+    return true
+end
+local ok,err=pcall(function()
+    local settings=readSelection()
+    app.Mode=validMode(savedMode) and savedMode or (validMode(settings.mode) and settings.mode or "farm")
+    app.PlantCount=validPlantCount(savedPlantCount) and savedPlantCount or (validPlantCount(settings.plantCount) and settings.plantCount or 21)
+    session=makeWorldSession(game.Players.LocalPlayer,app) app.Session=session
+    adapter=makeAdapter(game.Players.LocalPlayer,app)
+    app.Adapter=adapter
+    app.World,app.Job=adapter.Context.name,game.JobId
+    assert(type(app.World)=="string" and app.World~="", "Masuk world dahulu.")
+    local choice=savedSeedId or settings.seedId
+    if choice then adapter.SetCrop(choice) end
+    app.Crop=adapter.GetCrop()
+    resetEngine()
+    ui.SetMode(app.Mode)
+    ui.SetPlantCount(app.PlantCount)
+    ui.SetCrop(app.Crop)
+    app.RefreshCrops()
+    pickup=makePickupDriver({View=adapter.PickupView,Move=adapter.Move,Jump=adapter.Jump,Release=adapter.Release},{radius=10})
+    app.Pickup=pickup
+    if savedAnchor and savedAnchor.world==adapter.Context.name and savedAnchor.job==game.JobId and adapter.IsWorldAuthorized()
+        and (savedAnchor.mode==app.Mode or (savedAnchor.mode==nil and app.Mode=="farm"))
+        and (savedAnchor.plantCount or 21)==app.PlantCount then
+        app.Anchor=savedAnchor ui.SetAnchor(savedAnchor)
+        engine.State.status=app.Mode=="break_only" and "Titik tersimpan. START untuk tiga blok tanpa tanam/panen seed."
+            or "Titik tersimpan. START untuk "..app.PlantCount.." tanaman dan tiga blok atas."
+    else app.Capture() end
+    if savedWantsRun and (savedRun or savedAnchor) then
+        app.LastRun=copy(savedRun or {world=savedAnchor.world,anchor=savedAnchor,seedId=app.Crop.seedId,
+            mode=app.Mode,plantCount=app.PlantCount,progress=savedProgress})
+        app.LastRun.progress=savedProgress or app.LastRun.progress
+        app.LastRun.plantCount=app.LastRun.plantCount or app.PlantCount
+        app.WantsRun=true beginRecovery(os.clock())
+    end
+end)
+if not ok then ui.SetStatus("Belum siap: "..tostring(err):sub(1,150)) warn("[Block Farm] "..tostring(err)) return end
+local nextUI=0
+heartbeat=game:GetService("RunService").Heartbeat:Connect(function()
+    if not app.Alive then return end
+    local now=os.clock()
+    local sessionOK,view=pcall(session.View)
+    if not sessionOK then view={ready=false} end
+    if recoverStep(now,view) then
+        if now>=nextUI then
+            nextUI=now+.2
+            if engine then ui.SetStats(engine.State) end
+        end
+        return
+    end
+    if worldChanged() then
+        local rebound,why=pcall(bindCurrentWorld,true)
+        if not rebound then
+            app.Stop()
+            ui.SetStatus("Menunggu world siap: "..tostring(why):sub(1,110))
+        end
+        return
+    end
+    -- The planner owns central cleanup; the legacy pickup route stays disabled.
+    -- Passive collection below only takes items already nearby.
+    if pickup.State.busy or pickup.State.failed then pickup.Cancel() end
+    engine.Step(now)
+    if app.WantsRun and not engine.State.running then
+        -- An engine safety stop must not be converted into a later auto-restart.
+        -- Only the actual world picker is a resumable interruption.
+        local currentOK,current=pcall(session.View)
+        if currentOK and current.picker then beginRecovery(now) return end
+        app.WantsRun=false
+    end
+    local collected,failure=pcall(adapter.Collect,now)
+    if not collected then adapter.LastCollect=tostring(failure):sub(1,100) end
+    if now>=nextUI then
+        nextUI=now+.2
+        local counted,seeds,blocks=pcall(adapter.Inventory)
+        if counted then engine.State.seeds,engine.State.blocks=seeds,blocks end
+        if not engine.State.running then
+            local read,view=pcall(adapter.Snapshot)
+            if read and view.ready and #view.seedSlots==adapter.SeedCount then
+                local growing,mature=0,0
+                for _,slot in ipairs(view.seedSlots) do
+                    if slot.state=="growing" then growing=growing+1 elseif slot.state=="mature" then mature=mature+1 end
+                end
+                engine.State.growing,engine.State.mature,engine.State.occupied=growing,mature,growing+mature
+            end
+        end
+        engine.State.collected=adapter.Collected
+        if app.WantsRun and app.LastRun and engine.State.running then app.LastRun.progress=engine.ExportProgress() end
+        ui.SetStats(engine.State)
+        ui.SetRunning(app.WantsRun or engine.State.running)
+        local displayStatus=engine.State.status
+        if engine.State.running and type(adapter.LastBlockCleanup)=="string" and adapter.LastBlockCleanup:match("^Tas penuh:") then
+            displayStatus=displayStatus.."\nDrop tengah tertunda: tas penuh; stok dipakai dahulu."
+        end
+        ui.SetStatus(displayStatus)
+    end
+end)
+print("[Block Farm] "..app.Version.." · "..app.World.." · "..(app.WantsRun and "RESUME" or "OFF").." · "..app.Crop.blockName.." · "..app.Mode.." · tanaman "..app.PlantCount)
